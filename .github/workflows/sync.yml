@@ -1,0 +1,61 @@
+name: Sync All Branches
+
+on:
+  schedule:
+    - cron: "0 0 * * *"  # 每天 UTC 时间 0:00 触发一次
+  workflow_dispatch:  # 允许手动触发
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout your repository
+        uses: actions/checkout@v3
+        with:
+          repository: CyrusZhou-CN/ollama
+          token: ${{ secrets.GH_TOKEN }}
+          fetch-depth: 1
+          
+      - name: Authenticate with GitHub CLI
+        run: |
+          echo "${{ secrets.GH_TOKEN }}" | gh auth login --with-token
+      - name: Add and fetch from remote repository
+        run: |
+          REMOTE_REPO="ollama/ollama"
+          
+          # 添加远程仓库
+          REMOTE_URL="https://github.com/$REMOTE_REPO.git"
+          git remote add upstream $REMOTE_URL
+          
+          # 获取远程分支和标签
+          git fetch upstream --tags
+          git push --tags --progress "origin"
+      - name: Sync all branches
+        run: |
+          REMOTE_REPO="ollama/ollama"
+          LOCAL_REPO="CyrusZhou-CN/ollama"
+          
+          # 获取所有远程分支
+          REMOTE_BRANCHES=$(gh api repos/$REMOTE_REPO/branches  --paginate  --jq '.[].name')
+          LOCAL_BRANCHES=$(gh api repos/$LOCAL_REPO/branches  --paginate  --jq '.[].name')
+          
+          for branch in $REMOTE_BRANCHES; do
+            echo "Checking if local branch $branch exists"
+            if echo "$LOCAL_BRANCHES" | grep -E "^$branch$" > /dev/null; then
+              echo "Syncing branch: $branch"
+              gh repo sync $LOCAL_REPO -b $branch --force
+            else
+              echo "Local branch $branch exists, syncing..."
+              # 创建本地分支并设置为跟踪远程分支
+              git checkout -b $branch upstream/$branch
+              git push origin $branch
+            fi
+          done
+
+      - name: Push tags to own repo
+        run: |
+          git remote update --prune
+      - name: Cleanup
+        run: |
+          git gc --prune=now

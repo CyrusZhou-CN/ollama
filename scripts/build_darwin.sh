@@ -34,33 +34,33 @@ _build_darwin() {
                 -DCMAKE_OSX_ARCHITECTURES=x86_64 \
                 -DCMAKE_OSX_DEPLOYMENT_TARGET=11.3
             cmake --build build/darwin-$ARCH --target ggml-cpu -j
-            install build/darwin-$ARCH/lib/ollama/*.{dylib,so} $INSTALL_PREFIX
+            install -d $INSTALL_PREFIX/lib/ollama
+            install build/darwin-$ARCH/lib/ollama/*.{dylib,so} $INSTALL_PREFIX/lib/ollama
         fi
     done
 }
 
 _sign_darwin() {
     status "Creating universal binary..."
-    lipo -create -output dist/darwin/ollama dist/darwin/*/ollama
+    mkdir -p dist/darwin
+    lipo -create -output dist/darwin/ollama dist/darwin-*/ollama
+    chmod +x dist/darwin/ollama
 
-    if [ -z "$APPLE_IDENTITY" ]; then
-        status "No APPLE_IDENTITY set, skipping code signing"
-        return
+    if [ -n "$APPLE_IDENTITY" ]; then
+        for F in dist/darwin/ollama dist/darwin-amd64/lib/ollama/*; do
+            codesign -f --timestamp -s "$APPLE_IDENTITY" --identifier ai.ollama.ollama --options=runtime $F
+        done
+
+        # create a temporary zip for notarization
+        TEMP=$(mktemp -u).zip
+        ditto -c -k --keepParent dist/darwin/ollama "$TEMP"
+        xcrun notarytool submit "$TEMP" --wait --timeout 10m --apple-id $APPLE_ID --password $APPLE_PASSWORD --team-id $APPLE_TEAM_ID
+        rm -f "$TEMP"
     fi
 
-    for F in dist/darwin/ollama dist/darwin/amd64/lib*; do
-        codesign -f --timestamp -s "$APPLE_IDENTITY" --identifier ai.ollama.ollama --options=runtime $F
-    done
-
-    # create a temporary zip for notarization
-    TEMP=$(mktemp -u).zip
-    ditto -c -k --keepParent dist/darwin/ollama "$TEMP"
-    xcrun notarytool submit dist/darwin/temp.zip --wait --timeout 10m --apple-id $APPLE_ID --password $APPLE_PASSWORD --team-id $APPLE_TEAM_ID
-    rm -f "$TEMP"
-
-    # create a universal tarball
+    status "Creating universal tarball..."
     tar -cf dist/ollama-darwin.tar --strip-components 2 dist/darwin/ollama
-    tar -rf dist/ollama-darwin.tar --strip-components 3 dist/darwin/amd64/lib*
+    tar -rf dist/ollama-darwin.tar --strip-components 4 dist/darwin-amd64/lib/
     gzip -9vc <dist/ollama-darwin.tar >dist/ollama-darwin.tgz
 }
 

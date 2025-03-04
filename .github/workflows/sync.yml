@@ -30,7 +30,7 @@ jobs:
           
           # 获取远程分支和标签
           git fetch upstream --tags
-          git push --tags --progress "origin"
+          git push --tags --progress "origin"  --force
       - name: Sync all branches
         run: |
           REMOTE_REPO="ollama/ollama"

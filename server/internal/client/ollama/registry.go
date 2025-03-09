@@ -770,34 +770,54 @@ type chunksum struct {
 	Digest blob.Digest
 }
 
+var errBrokenStream = errors.New("chunksums: final digest mismatch; possible broken stream")
+
 func chunksums(r io.Reader) iter.Seq2[chunksum, error] {
 	return func(yield func(chunksum, error) bool) {
-		s := bufio.NewScanner(r)
-		var lineno int
-		for s.Scan() {
-			lineno++
-			line := strings.TrimSpace(s.Text())
-			if line == "" || strings.HasPrefix(line, "#") {
-				continue
+		sc := bufio.NewScanner(r)
+		sc.Split(bufio.ScanWords)
+		take := func() string {
+			if !sc.Scan() {
+				return ""
 			}
-			parts := strings.Fields(line)
-			if len(parts) != 2 {
-				yield(chunksum{}, fmt.Errorf("invalid chunksum line %d: %q", lineno, line))
+			return sc.Text()
+		}
+
+		s := take()
+		if s == "" {
+			yield(chunksum{}, cmp.Or(sc.Err(), io.ErrUnexpectedEOF))
+			return
+		}
+		d, err := blob.ParseDigest(s)
+		if err != nil {
+			yield(chunksum{}, err)
+			return
+		}
+
+		var roll blob.RollingDigest
+		for {
+			rng := take()
+			switch rng {
+			case "":
+				yield(chunksum{}, cmp.Or(sc.Err(), io.ErrUnexpectedEOF))
 				return
-			}
-			d, err := blob.ParseDigest(parts[0])
-			if err != nil {
-				yield(chunksum{}, fmt.Errorf("invalid digest %d: %q", lineno, parts[0]))
+			case "EOS":
+				if roll.Current() == d {
+					return // success
+				}
+				yield(chunksum{}, errBrokenStream)
 				return
+			default:
+				c, err := chunks.Parse(rng)
+				if err != nil {
+					yield(chunksum{}, err)
+					return
+				}
+				if !yield(chunksum{c, d}, nil) {
+					return
+				}
 			}
-			chunk, err := chunks.Parse(parts[1])
-			if err != nil {
-				yield(chunksum{}, fmt.Errorf("invalid chunk range %d: %q", lineno, parts[1]))
-				return
-			}
-			if !yield(chunksum{Chunk: chunk, Digest: d}, nil) {
-				return
-			}
+			roll.Append(d)
 		}
 	}
 }

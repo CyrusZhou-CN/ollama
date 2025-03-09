@@ -818,3 +818,60 @@ func TestUnlink(t *testing.T) {
 		}
 	})
 }
+
+func TestChunksums(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want []string
+		err  error
+	}{
+		{
+			name: "empty",
+			in:   "",
+			want: nil,
+			err:  io.ErrUnexpectedEOF,
+		},
+		{
+			name: "success",
+			in: `
+				sha256:68e0ec597aee59d35f8dc44942d7b17d471ade10d3aca07a5bb7177713950312 0-0
+				sha256:ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356 1-1
+				sha256:265e54a0db21d7ce35d182d437878c261b29d3391c0928c38332031ba8dbb73b EOS
+			`,
+			want: []string{
+				"sha256:68e0ec597aee59d35f8dc44942d7b17d471ade10d3aca07a5bb7177713950312 0-0",
+				"sha256:ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356 1-1",
+			},
+		},
+		{
+			name: "no EOS",
+			in: `
+				sha256:68e0ec597aee59d35f8dc44942d7b17d471ade10d3aca07a5bb7177713950312 0-0
+				sha256:ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356 1-1
+			`,
+			want: []string{
+				"sha256:68e0ec597aee59d35f8dc44942d7b17d471ade10d3aca07a5bb7177713950312 0-0",
+				"sha256:ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356 1-1",
+			},
+			err: io.ErrUnexpectedEOF,
+		},
+	}
+
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			var got []string
+			for c, err := range chunksums(strings.NewReader(tt.in)) {
+				if tt.err != nil && !errors.Is(err, tt.err) {
+					t.Fatalf("err = %v; want %v", err, tt.err)
+				} else if tt.err == nil && err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				got = append(got, fmt.Sprintf("%s %s", c.Digest, c.Chunk))
+			}
+			if !slices.Equal(got, tt.want) {
+				t.Errorf("\ngot:\n%q\nwant\n%q", got, tt.want)
+			}
+		})
+	}
+}

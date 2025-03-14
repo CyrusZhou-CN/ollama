@@ -11,7 +11,7 @@ import (
 
 	"github.com/ollama/ollama/api"
 	"github.com/ollama/ollama/llm"
-	"github.com/ollama/ollama/model/mllama"
+	"github.com/ollama/ollama/model/models/mllama"
 	"github.com/ollama/ollama/template"
 )
 
@@ -26,6 +26,7 @@ func chatPrompt(ctx context.Context, m *Model, tokenize tokenizeFunc, opts *api.
 	var system []api.Message
 
 	isMllama := checkMllamaModelFamily(m)
+	isGemma3 := checkGemma3ModelFamily(m)
 
 	var imageNumTokens int
 	// TODO: Ideally we would compute this from the projector metadata but some pieces are implementation dependent
@@ -40,7 +41,7 @@ func chatPrompt(ctx context.Context, m *Model, tokenize tokenizeFunc, opts *api.
 	n := len(msgs) - 1
 	// in reverse, find all messages that fit into context window
 	for i := n; i >= 0; i-- {
-		if isMllama && len(msgs[i].Images) > 1 {
+		if (isMllama || isGemma3) && len(msgs[i].Images) > 1 {
 			return "", nil, errTooManyImages
 		}
 
@@ -92,26 +93,33 @@ func chatPrompt(ctx context.Context, m *Model, tokenize tokenizeFunc, opts *api.
 			var imgData llm.ImageData
 
 			if isMllama {
-				data, opts, err := mllama.Preprocess(bytes.NewReader(i))
-				if err != nil {
-					return "", nil, err
-				}
+				if len(m.ProjectorPaths) == 0 {
+					imgData = llm.ImageData{
+						ID:   len(images),
+						Data: i,
+					}
+				} else {
+					data, opts, err := mllama.Preprocess(bytes.NewReader(i))
+					if err != nil {
+						return "", nil, err
+					}
 
-				buf := new(bytes.Buffer)
-				err = binary.Write(buf, binary.LittleEndian, data)
-				if err != nil {
-					return "", nil, err
-				}
+					buf := new(bytes.Buffer)
+					err = binary.Write(buf, binary.LittleEndian, data)
+					if err != nil {
+						return "", nil, err
+					}
 
-				ar, ok := opts["aspectRatioIndex"].(int)
-				if !ok {
-					return "", nil, fmt.Errorf("missing aspect ratio for image")
-				}
+					ar, ok := opts["aspectRatioIndex"].(int)
+					if !ok {
+						return "", nil, fmt.Errorf("missing aspect ratio for image")
+					}
 
-				imgData = llm.ImageData{
-					ID:            len(images),
-					Data:          buf.Bytes(),
-					AspectRatioID: ar,
+					imgData = llm.ImageData{
+						ID:            len(images),
+						Data:          buf.Bytes(),
+						AspectRatioID: ar,
+					}
 				}
 				imgPrompt = "<|image|>"
 			} else {
@@ -145,6 +153,15 @@ func chatPrompt(ctx context.Context, m *Model, tokenize tokenizeFunc, opts *api.
 func checkMllamaModelFamily(m *Model) bool {
 	for _, arch := range m.Config.ModelFamilies {
 		if arch == "mllama" {
+			return true
+		}
+	}
+	return false
+}
+
+func checkGemma3ModelFamily(m *Model) bool {
+	for _, arch := range m.Config.ModelFamilies {
+		if arch == "gemma3" {
 			return true
 		}
 	}

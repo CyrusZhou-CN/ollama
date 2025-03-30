@@ -141,3 +141,15 @@ func (c *EncoderCache) Remove(seq int, beginIndex, endIndex int32) error {
 
 	return nil
 }
+
+func (c *EncoderCache) Has(seq int, pos int32) bool {
+	if seq != 0 {
+		return false
+	}
+
+	if !c.encoderCached {
+		return false
+	}
+
+	return true
+}

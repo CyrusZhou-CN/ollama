@@ -148,6 +148,10 @@ func (c *InputCache) findLongestCacheSlot(prompt []input.Input) (*InputCacheSlot
 		}
 
 		count := countCommonPrefix(s.Inputs, prompt)
+		if c.cache != nil && !c.cache.Has(s.Id, count-1) {
+			count = 0
+		}
+
 		if count > longest {
 			longest = count
 			longestSlot = &c.slots[i]

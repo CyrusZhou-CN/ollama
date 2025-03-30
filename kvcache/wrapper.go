@@ -98,3 +98,13 @@ func (c *WrapperCache) Remove(seq int, beginIndex, endIndex int32) error {
 
 	return nil
 }
+
+func (c *WrapperCache) Has(seq int, pos int32) bool {
+	for _, cache := range c.caches {
+		if !cache.Has(seq, pos) {
+			return false
+		}
+	}
+
+	return true
+}

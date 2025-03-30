@@ -681,3 +681,36 @@ func (c *Causal) Remove(seq int, beginIndex, endIndex int32) error {
 
 	return nil
 }
+
+func (c *Causal) Has(seq int, pos int32) bool {
+	seqRange, ok := c.cellRanges[seq]
+	if !ok {
+		return false
+	}
+
+	if c.windowSize == math.MaxInt32 {
+		for i := seqRange.min; i <= seqRange.max; i++ {
+			if slices.Contains(c.cells[i].sequences, seq) && c.cells[i].pos == pos {
+				return true
+			}
+		}
+
+		return false
+	}
+
+	// for sliding window, check if the position is within the window
+	var last int32 = -1
+	for i := seqRange.min; i <= seqRange.max; i++ {
+		if slices.Contains(c.cells[i].sequences, seq) {
+			if c.cells[i].pos > last {
+				last = c.cells[i].pos
+			}
+		}
+	}
+
+	if last == -1 {
+		return false
+	}
+
+	return pos >= last-c.windowSize+1 && pos <= last
+}

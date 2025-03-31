@@ -118,6 +118,10 @@ func (c *InputCache) LoadCacheSlot(prompt []input.Input) (*InputCacheSlot, []inp
 	}
 
 	if c.cache != nil {
+		if numPast > 0 && !c.cache.CanResume(slot.Id, numPast) {
+			numPast = 0
+		}
+
 		err = c.cache.Remove(slot.Id, numPast, math.MaxInt32)
 		if err != nil {
 			// Some models don't support partial erasure
@@ -148,10 +152,6 @@ func (c *InputCache) findLongestCacheSlot(prompt []input.Input) (*InputCacheSlot
 		}
 
 		count := countCommonPrefix(s.Inputs, prompt)
-		if c.cache != nil && !c.cache.Has(s.Id, count-1) {
-			count = 0
-		}
-
 		if count > longest {
 			longest = count
 			longestSlot = &c.slots[i]

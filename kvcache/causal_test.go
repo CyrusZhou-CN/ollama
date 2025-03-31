@@ -300,64 +300,9 @@ func testCache(t *testing.T, backend ml.Backend, cache Cache, tests []testCase) 
 	}
 }
 
-func TestHas(t *testing.T) {
+func TestCanResume(t *testing.T) {
 	backend := &testBackend{}
-	cache := NewCausalCache(nil)
-	defer cache.Close()
-
-	cache.Init(backend, ml.DTypeF16, 1, 16, 16)
-
-	context := backend.NewContext()
-	defer context.Close()
-
-	err := cache.StartForward(context, input.Batch{
-		Positions: []int32{0, 1},
-		Sequences: []int{0, 0},
-	})
-	if err != nil {
-		t.Fatalf("cache.StartForward failed: %v", err)
-	}
-
-	cache.SetLayer(0)
-	tensor, _ := context.FromFloatSlice([]float32{1, 2}, 1, 1, 2)
-	cache.Put(context, tensor, tensor)
-
-	if !cache.Has(0, 0) {
-		t.Errorf("Has(0, 0) = false, want true")
-	}
-	if !cache.Has(0, 1) {
-		t.Errorf("Has(0, 1) = false, want true")
-	}
-	if cache.Has(0, 2) {
-		t.Errorf("Has(0, 2) = true, want false")
-	}
-	if cache.Has(1, 0) {
-		t.Errorf("Has(1, 0) = true, want false")
-	}
-
-	err = cache.StartForward(context, input.Batch{
-		Positions: []int32{0},
-		Sequences: []int{1},
-	})
-	if err != nil {
-		t.Fatalf("StartForward failed: %v", err)
-	}
-
-	cache.SetLayer(0)
-	tensor, _ = context.FromFloatSlice([]float32{3}, 1, 1, 1)
-	cache.Put(context, tensor, tensor)
-
-	if !cache.Has(1, 0) {
-		t.Errorf("after adding seq 1: Has(1, 0) = false, want true")
-	}
-	if cache.Has(1, 1) {
-		t.Errorf("after adding seq 1: Has(1, 1) = true, want false")
-	}
-}
-
-func TestSWAHas(t *testing.T) {
-	backend := &testBackend{}
-	windowSize := int32(2)
+	windowSize := int32(4)
 	cache := NewSWACache(windowSize, nil)
 	defer cache.Close()
 
@@ -378,42 +323,51 @@ func TestSWAHas(t *testing.T) {
 	tensor, _ := context.FromFloatSlice([]float32{1, 2, 3, 4}, 1, 1, 4)
 	cache.Put(context, tensor, tensor)
 
-	// with window size 2, only positions 2-3 should be accessible
-	if cache.Has(0, 0) {
-		t.Errorf("Has(0, 0) = true, want false (outside window)")
+	// with window size 4, nothing has slid out of the window yet
+	if !cache.CanResume(0, 0) {
+		t.Errorf("CanResume(0, 0) = false, want true (within window)")
 	}
-	if cache.Has(0, 1) {
-		t.Errorf("Has(0, 1) = true, want false (outside window)")
+	if !cache.CanResume(0, 1) {
+		t.Errorf("CanResume(0, 1) = false, want true (within window)")
 	}
-	if !cache.Has(0, 2) {
-		t.Errorf("Has(0, 2) = false, want true (within window)")
+	if !cache.CanResume(0, 2) {
+		t.Errorf("CanResume(0, 2) = false, want true (within window)")
 	}
-	if !cache.Has(0, 3) {
-		t.Errorf("Has(0, 3) = false, want true (latest position)")
+	if !cache.CanResume(0, 3) {
+		t.Errorf("CanResume(0, 3) = false, want true (latest position)")
 	}
 
 	// shift window by adding position 4
 	err = cache.StartForward(context, input.Batch{
-		Positions: []int32{4},
-		Sequences: []int{0},
+		Positions: []int32{4, 5},
+		Sequences: []int{0, 0},
 	})
 	if err != nil {
 		t.Fatalf("StartForward failed: %v", err)
 	}
 
 	cache.SetLayer(0)
-	tensor, _ = context.FromFloatSlice([]float32{5}, 1, 1, 1)
+	tensor, _ = context.FromFloatSlice([]float32{5, 6}, 1, 1, 2)
 	cache.Put(context, tensor, tensor)
 
-	// window should now cover positions 3-4
-	if cache.Has(0, 2) {
-		t.Errorf("after shift: Has(0, 2) = true, want false (now outside window)")
+	// only the latest position has overlapping windows
+	if cache.CanResume(0, 0) {
+		t.Errorf("after shift: CanResume(0, 0) = true, want false (outside window)")
 	}
-	if !cache.Has(0, 3) {
-		t.Errorf("after shift: Has(0, 3) = false, want true (within window)")
+	if cache.CanResume(0, 1) {
+		t.Errorf("after shift: CanResume(0, 1) = true, want false (outside window)")
 	}
-	if !cache.Has(0, 4) {
-		t.Errorf("after shift: Has(0, 4) = false, want true (latest position)")
+	if cache.CanResume(0, 2) {
+		t.Errorf("after shift: CanResume(0, 2) = true, want false (outside window)")
+	}
+	if cache.CanResume(0, 3) {
+		t.Errorf("after shift: CanResume(0, 3) = true, want false (outside window)")
+	}
+	if cache.CanResume(0, 4) {
+		t.Errorf("after shift: CanResume(0, 4) = true, want false (outside window)")
+	}
+	if !cache.CanResume(0, 5) {
+		t.Errorf("after shift: CanResume(0, 5) = false, want true (latest position)")
 	}
 }
 

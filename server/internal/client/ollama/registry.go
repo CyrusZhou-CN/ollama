@@ -592,8 +592,7 @@ func (r *Registry) Pull(ctx context.Context, name string) error {
 	return c.Link(m.Name, md)
 }
 
-// Unlink is like [blob.DiskCache.Unlink], but makes name fully qualified
-// before attempting to unlink the model.
+// Unlink applies Mask to the name and passes it to the cache's Unlink method.
 func (r *Registry) Unlink(name string) (ok bool, _ error) {
 	n, err := r.parseName(name)
 	if err != nil {

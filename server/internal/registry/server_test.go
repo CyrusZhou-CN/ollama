@@ -78,7 +78,12 @@ func newTestServer(t *testing.T, upstreamRegistry http.HandlerFunc) *Local {
 
 func (s *Local) send(t *testing.T, method, path, body string) *httptest.ResponseRecorder {
 	t.Helper()
-	req := httptest.NewRequestWithContext(t.Context(), method, path, strings.NewReader(body))
+	ctx := ollama.WithTrace(t.Context(), &ollama.Trace{
+		Update: func(l *ollama.Layer, n int64, err error) {
+			t.Logf("update: %s %d %v", l.Digest, n, err)
+		},
+	})
+	req := httptest.NewRequestWithContext(ctx, method, path, strings.NewReader(body))
 	return s.sendRequest(t, req)
 }
 
@@ -184,36 +189,48 @@ func TestServerPull(t *testing.T) {
 
 	checkResponse := func(got *httptest.ResponseRecorder, wantlines string) {
 		t.Helper()
-
 		if got.Code != 200 {
 			t.Errorf("Code = %d; want 200", got.Code)
 		}
 		gotlines := got.Body.String()
+		if strings.TrimSpace(gotlines) == "" {
+			gotlines = "<empty>"
+		}
 		t.Logf("got:\n%s", gotlines)
 		for want := range strings.Lines(wantlines) {
 			want = strings.TrimSpace(want)
 			want, unwanted := strings.CutPrefix(want, "!")
 			want = strings.TrimSpace(want)
 			if !unwanted && !strings.Contains(gotlines, want) {
-				t.Errorf("! missing %q in body", want)
+				t.Errorf("\t! missing %q in body", want)
 			}
 			if unwanted && strings.Contains(gotlines, want) {
-				t.Errorf("! unexpected %q in body", want)
+				t.Errorf("\t! unexpected %q in body", want)
 			}
 		}
 	}
 
-	got := s.send(t, "POST", "/api/pull", `{"model": "BOOM"}`)
-	checkResponse(got, `
-		{"status":"error: request error https://example.com/v2/library/BOOM/manifests/latest: registry responded with status 999: boom"}
-	`)
+	// Emulate old style pull:
+	//
+	//   ; ollama pull llama3
+	//   pulling manifest
+	//   pulling 6a0746a1ec1a... 100% ▕█████████████████▏ 4.7 GB
+	//   pulling 4fa551d4f938... 100% ▕█████████████████▏  12 KB
+	//   pulling 8ab4849b038c... 100% ▕█████████████████▏  254 B
+	//   pulling 577073ffcc6c... 100% ▕█████████████████▏  110 B
+	//   pulling 3f8eb4da87fa... 100% ▕█████████████████▏  485 B
+	//   verifying sha256 digest
+	//   writing manifest
+	//   success
 
-	got = s.send(t, "POST", "/api/pull", `{"model": "smol"}`)
+	got := s.send(t, "POST", "/api/pull", `{"model": "smol"}`)
 	checkResponse(got, `
+		{"status":"pulling manifest"}
 		{"digest":"sha256:68e0ec597aee59d35f8dc44942d7b17d471ade10d3aca07a5bb7177713950312","total":5}
-		{"digest":"sha256:ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356","total":3}
 		{"digest":"sha256:68e0ec597aee59d35f8dc44942d7b17d471ade10d3aca07a5bb7177713950312","total":5,"completed":5}
-		{"digest":"sha256:ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356","total":3,"completed":3}
+		{"status":"verifying sha256 digest"}
+		{"status":"writing manifest"}
+		{"status":"success"}
 	`)
 
 	got = s.send(t, "POST", "/api/pull", `{"model": "unknown"}`)

@@ -97,6 +97,7 @@ type Context interface {
 
 	Forward(...Tensor) Context
 	Compute(...Tensor)
+	Reserve() error
 	MaxGraphNodes() int
 	Close()
 

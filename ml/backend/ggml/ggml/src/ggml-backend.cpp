@@ -91,6 +91,16 @@ ggml_backend_buffer_t ggml_backend_buffer_init(
         /* .usage     = */ GGML_BACKEND_BUFFER_USAGE_ANY
     };
 
+#if defined(__clang__)
+	fprintf(stderr, "init clang\n");
+#elif defined(__GNUC__)
+    fprintf(stderr, "init gcc\n");
+#elif defined(_MSC_VER)
+    fprintf(stderr, "init msvc\n");
+#else
+    fprintf(stderr, "init unknown\n");
+#endif
+
     return buffer;
 }
 
@@ -107,6 +117,16 @@ void ggml_backend_buffer_free(ggml_backend_buffer_t buffer) {
         buffer->iface.free_buffer(buffer);
     }
     delete buffer;
+
+#if defined(__clang__)
+	fprintf(stderr, "free clang\n");
+#elif defined(__GNUC__)
+    fprintf(stderr, "free gcc\n");
+#elif defined(_MSC_VER)
+    fprintf(stderr, "free msvc\n");
+#else
+    fprintf(stderr, "free unknown\n");
+#endif
 }
 
 size_t ggml_backend_buffer_get_size(ggml_backend_buffer_t buffer) {

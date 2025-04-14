@@ -529,7 +529,6 @@ struct ggml_backend_cuda_buffer_context {
 static void ggml_backend_cuda_buffer_free_buffer(ggml_backend_buffer_t buffer) {
     ggml_backend_cuda_buffer_context * ctx = (ggml_backend_cuda_buffer_context *)buffer->context;
     delete ctx;
-    delete buffer;
 }
 
 static bool ggml_backend_buffer_is_cuda(ggml_backend_buffer_t buffer) {

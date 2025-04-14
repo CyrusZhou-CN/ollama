@@ -9,10 +9,10 @@ Subject: [PATCH] metal: add op_neg
  2 files changed, 22 insertions(+)
 
 diff --git a/ggml/src/ggml-metal/ggml-metal.m b/ggml/src/ggml-metal/ggml-metal.m
-index e4c093f9..d8422f1b 100644
+index 24ad1326..68835da3 100644
 --- a/ggml/src/ggml-metal/ggml-metal.m
 +++ b/ggml/src/ggml-metal/ggml-metal.m
-@@ -423,6 +423,7 @@ enum ggml_metal_kernel_type {
+@@ -423,6 +423,7 @@ static void ggml_backend_metal_device_rel(struct ggml_backend_metal_device_conte
      GGML_METAL_KERNEL_TYPE_SQRT,
      GGML_METAL_KERNEL_TYPE_SIN,
      GGML_METAL_KERNEL_TYPE_COS,
@@ -20,7 +20,7 @@ index e4c093f9..d8422f1b 100644
      GGML_METAL_KERNEL_TYPE_SUM_ROWS,
      GGML_METAL_KERNEL_TYPE_POOL_2D_AVG_F32,
      GGML_METAL_KERNEL_TYPE_POOL_2D_MAX_F32,
-@@ -1039,6 +1040,7 @@ static struct ggml_backend_metal_context * ggml_metal_init(ggml_backend_dev_t de
+@@ -1039,6 +1040,7 @@ @implementation GGMLMetalClass
          GGML_METAL_ADD_KERNEL(GGML_METAL_KERNEL_TYPE_SQRT,                          sqrt,                           true);
          GGML_METAL_ADD_KERNEL(GGML_METAL_KERNEL_TYPE_SIN,                           sin,                            true);
          GGML_METAL_ADD_KERNEL(GGML_METAL_KERNEL_TYPE_COS,                           cos,                            true);

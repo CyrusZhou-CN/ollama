@@ -4398,7 +4398,6 @@ static void ggml_backend_metal_buffer_free_buffer(ggml_backend_buffer_t buffer) 
     }
 
     free(ctx);
-    free(buffer);
 }
 
 static void * ggml_backend_metal_buffer_get_base(ggml_backend_buffer_t buffer) {

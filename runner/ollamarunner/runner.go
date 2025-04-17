@@ -82,7 +82,7 @@ type Sequence struct {
 	// true if an embedding are to be returned instead of text generation
 	embeddingOnly bool
 
-	doneReason string
+	doneReason llm.DoneReason
 
 	// Metrics
 	startProcessingTime time.Time
@@ -335,7 +335,7 @@ func flushPending(seq *Sequence) bool {
 	}
 }
 
-func (s *Server) removeSequence(seqIndex int, reason string) {
+func (s *Server) removeSequence(seqIndex int, reason llm.DoneReason) {
 	seq := s.seqs[seqIndex]
 
 	flushPending(seq)
@@ -385,7 +385,7 @@ func (s *Server) processBatch() error {
 
 		// if past the num predict limit
 		if seq.numPredict > 0 && seq.numPredicted >= seq.numPredict {
-			s.removeSequence(seqIdx, "limit")
+			s.removeSequence(seqIdx, llm.DoneReasonLength)
 			continue
 		}
 
@@ -504,7 +504,7 @@ func (s *Server) processBatch() error {
 		if seq.embeddingOnly {
 			// TODO(jessegross): Embedding support
 			slog.Warn("generation of embedding outputs not yet supported")
-			s.removeSequence(i, "")
+			s.removeSequence(i, llm.DoneReasonStop)
 			continue
 		}
 
@@ -522,7 +522,7 @@ func (s *Server) processBatch() error {
 			// as it's important for the /api/generate context
 			// seq.responses <- piece
 
-			s.removeSequence(i, "stop")
+			s.removeSequence(i, llm.DoneReasonStop)
 			continue
 		}
 
@@ -558,7 +558,7 @@ func (s *Server) processBatch() error {
 			}
 			seq.cache.Inputs = seq.cache.Inputs[:tokenLen]
 
-			s.removeSequence(i, "stop")
+			s.removeSequence(i, llm.DoneReasonStop)
 			continue
 		}
 
@@ -571,7 +571,7 @@ func (s *Server) processBatch() error {
 		}
 
 		if !flushPending(seq) {
-			s.removeSequence(i, "connection")
+			s.removeSequence(i, llm.DoneReasonConnectionClosed)
 		}
 	}
 
@@ -685,14 +685,9 @@ func (s *Server) completion(w http.ResponseWriter, r *http.Request) {
 
 				flusher.Flush()
 			} else {
-				// Send the final response
-				doneReason := "stop"
-				if seq.doneReason == "limit" {
-					doneReason = "length"
-				}
 				if err := json.NewEncoder(w).Encode(&llm.CompletionResponse{
 					Done:               true,
-					DoneReason:         doneReason,
+					DoneReason:         seq.doneReason,
 					PromptEvalCount:    seq.numPromptInputs,
 					PromptEvalDuration: seq.startGenerationTime.Sub(seq.startProcessingTime),
 					EvalCount:          seq.numPredicted,
@@ -726,6 +721,51 @@ func (m *multiLPath) Set(value string) error {
 
 func (m *multiLPath) String() string {
 	return strings.Join(*m, ", ")
+}
+
+func (s *Server) reserveWorstCaseGraph() error {
+	ctx := s.model.Backend().NewContext()
+	defer ctx.Close()
+
+	var batch input.Batch
+
+	inputs := make([]int32, s.batchSize)
+	batch.Positions = make([]int32, len(inputs))
+	batch.Sequences = make([]int, len(inputs))
+	for i := range inputs {
+		batch.Positions[i] = int32(i)
+	}
+
+	batch.Outputs = make([]int32, s.parallel)
+	for i := range batch.Outputs {
+		batch.Outputs[i] = int32(i)
+	}
+
+	var err error
+	batch.Inputs, err = ctx.Input().FromIntSlice(inputs, len(inputs))
+	if err != nil {
+		return err
+	}
+
+	cache := s.model.Config().Cache
+	if cache != nil {
+		err := cache.StartForward(ctx, batch, true)
+		if err != nil {
+			return err
+		}
+	}
+
+	t, err := s.model.Forward(ctx, batch)
+	if err != nil {
+		return err
+	}
+
+	err = ctx.Forward(t).Reserve()
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func (s *Server) loadModel(
@@ -762,6 +802,11 @@ func (s *Server) loadModel(
 	s.parallel = parallel
 	s.seqs = make([]*Sequence, s.parallel)
 	s.seqsSem = semaphore.NewWeighted(int64(s.parallel))
+
+	err = s.reserveWorstCaseGraph()
+	if err != nil {
+		panic(err)
+	}
 
 	s.status = llm.ServerStatusReady
 	s.ready.Done()

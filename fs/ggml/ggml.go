@@ -169,6 +169,7 @@ func (kv KV) OllamaEngineRequired() bool {
 	return slices.Contains([]string{
 		"gemma3",
 		"mistral3",
+		"llama4",
 	}, kv.Architecture())
 }
 
@@ -421,10 +422,6 @@ func DetectContentType(b []byte) string {
 // It collects array values for arrays with a size less than or equal to
 // maxArraySize. If the maxArraySize is negative, all arrays are collected.
 func Decode(rs io.ReadSeeker, maxArraySize int) (*GGML, int64, error) {
-	if maxArraySize == 0 {
-		maxArraySize = 1024
-	}
-
 	rs = bufioutil.NewBufferedSeeker(rs, 32<<10)
 
 	var magic uint32
@@ -478,7 +475,7 @@ func (f GGML) GraphSize(context, batch uint64, numParallel int, kvCacheType stri
 	}
 
 	switch f.KV().Architecture() {
-	case "llama":
+	case "llama", "llama4":
 		fullOffload = max(
 			4*batch*(1+4*embedding+context*(1+heads)),
 			4*batch*(embedding+vocab),
@@ -492,7 +489,7 @@ func (f GGML) GraphSize(context, batch uint64, numParallel int, kvCacheType stri
 
 		if ffnGateExpsWeight, ok := layers["blk.0"]["ffn_gate_exps.weight"]; ok {
 			// mixtral 8x22b
-			ff := uint64(f.KV()["llama.feed_forward_length"].(uint32))
+			ff := uint64(f.KV().Uint("feed_forward_length"))
 			partialOffload = max(
 				3*ffnGateExpsWeight.Size()+4*batch*(2*ff+headsKV+embedding+context+embeddingHeads*headsKV),
 				4*(context*batch*heads+context*embeddingHeads*headsKV+batch*1024+embeddingHeads*headsKV*batch),
@@ -688,6 +685,9 @@ func (llm GGML) VisionGraphSize() (weights, graphSize uint64) {
 		graphSize = 4 * (imageSize*imageSize*numChannels +
 			embeddingLength*patchSize +
 			numPatches*numPatches*headCount)
+	case "llama4":
+		// vision graph is computed independently in the same schedule
+		// and is negligible compared to the worst case text graph
 	}
 
 	return weights, graphSize

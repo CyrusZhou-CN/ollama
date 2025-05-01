@@ -152,6 +152,20 @@ func fileDigestMap(path string) (map[string]string, error) {
 	g.SetLimit(max(runtime.GOMAXPROCS(0)-1, 1))
 	for _, f := range files {
 		g.Go(func() error {
+			f, err := filepath.EvalSymlinks(f)
+			if err != nil {
+				return err
+			}
+
+			rel, err := filepath.Rel(path, f)
+			if err != nil {
+				return err
+			}
+
+			if !filepath.IsLocal(rel) {
+				return fmt.Errorf("insecure path: %s", rel)
+			}
+
 			digest, err := digestForFile(f)
 			if err != nil {
 				return err
@@ -215,11 +229,11 @@ func filesForModel(path string) ([]string, error) {
 			return nil, err
 		}
 
-		for _, safetensor := range matches {
-			if ct, err := detectContentType(safetensor); err != nil {
+		for _, match := range matches {
+			if ct, err := detectContentType(match); err != nil {
 				return nil, err
 			} else if ct != contentType {
-				return nil, fmt.Errorf("invalid content type: expected %s for %s", ct, safetensor)
+				return nil, fmt.Errorf("invalid content type: expected %s for %s", ct, match)
 			}
 		}
 

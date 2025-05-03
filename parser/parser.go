@@ -139,9 +139,27 @@ func fileDigestMap(path string) (map[string]string, error) {
 
 	var files []string
 	if fi.IsDir() {
-		files, err = filesForModel(path)
+		fs, err := filesForModel(path)
 		if err != nil {
 			return nil, err
+		}
+
+		for _, f := range fs {
+			f, err := filepath.EvalSymlinks(f)
+			if err != nil {
+				return nil, err
+			}
+
+			rel, err := filepath.Rel(path, f)
+			if err != nil {
+				return nil, err
+			}
+
+			if !filepath.IsLocal(rel) {
+				return nil, fmt.Errorf("insecure path: %s", rel)
+			}
+
+			files = append(files, f)
 		}
 	} else {
 		files = []string{path}

@@ -57,10 +57,6 @@ type Sequence struct {
 	// input cache being used by this sequence
 	cache *InputCacheSlot
 
-	// does this sequence require cross-attention layers to be processed? - if we have seen
-	// an image for certain multi-modal models
-	crossAttention bool
-
 	// channel to send responses over
 	responses chan string
 
@@ -205,7 +201,7 @@ func (s *Server) inputs(prompt string, images []llm.ImageData) ([]input, error) 
 				return nil, fmt.Errorf("invalid image index: %d", n)
 			}
 
-			embed, err := s.image.NewEmbed(s.lc, images[imageIndex].Data, images[imageIndex].AspectRatioID)
+			embed, err := s.image.NewEmbed(s.lc, images[imageIndex].Data)
 			if err != nil {
 				return nil, err
 			}
@@ -414,8 +410,10 @@ func (s *Server) processBatch(tokenBatch *llama.Batch, embedBatch *llama.Batch) 
 			if batch == nil {
 				if !embedding {
 					batch = tokenBatch
+				} else {
+					batch = embedBatch
 				}
-			} else if embedding != batch.IsEmbedding() || crossAttention != seq.crossAttention {
+			} else if embedding != batch.IsEmbedding() {
 				s.nextSeq = seqIdx
 				break
 			}
@@ -424,7 +422,6 @@ func (s *Server) processBatch(tokenBatch *llama.Batch, embedBatch *llama.Batch) 
 				break
 			}
 
-			crossAttention = seq.crossAttention
 			batch.Add(input.token, input.embed, len(seq.cache.Inputs)+len(seq.pendingInputs), i+1 == len(seq.inputs), seq.cache.Id)
 			seq.pendingInputs = append(seq.pendingInputs, input)
 			seq.iBatch = batch.NumTokens() - 1

@@ -56,7 +56,7 @@ func (c *ImageContext) Free(modelPath string) {
 	}
 }
 
-func (c *ImageContext) NewEmbed(llamaContext *llama.Context, data []byte, aspectRatioId int) ([][]float32, error) {
+func (c *ImageContext) NewEmbed(llamaContext *llama.Context, data []byte) ([][]float32, error) {
 	if c == nil {
 		return nil, nil
 	}

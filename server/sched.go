@@ -41,10 +41,11 @@ type Scheduler struct {
 	expiredCh     chan *runnerRef
 	unloadedCh    chan any
 
-	loaded   map[string]*runnerRef
-	loadedMu sync.Mutex
+	loaded        map[string]*runnerRef
+	loadedMu      sync.Mutex
+	activeLoading llm.LlamaServer
 
-	loadFn       func(req *LlmRequest, f *ggml.GGML, gpus discover.GpuInfoList, numParallel int)
+	loadFn       func(req *LlmRequest, f *ggml.GGML, gpus discover.GpuInfoList, numParallel int, requireFull bool)
 	newServerFn  func(gpus discover.GpuInfoList, model string, f *ggml.GGML, adapters []string, projectors []string, opts api.Options, numParallel int) (llm.LlamaServer, error)
 	getGpuFn     func() discover.GpuInfoList
 	getCpuFn     func() discover.GpuInfoList
@@ -202,8 +203,14 @@ func (s *Scheduler) processPending(ctx context.Context) {
 						numParallel = 1
 					}
 
+					if numParallel <= 0 {
+						numParallel = defaultParallel
+					}
+
+					pending.opts.NumCtx = pending.origNumCtx * numParallel
+
 					// Evaluate if the model will fit in the available system memory, or if we should unload a model first
-					if len(gpus) == 1 && gpus[0].Library == "cpu" {
+					/*if len(gpus) == 1 && gpus[0].Library == "cpu" {
 						// simplifying assumption of defaultParallel when in CPU mode
 						if numParallel <= 0 {
 							numParallel = defaultParallel
@@ -213,68 +220,64 @@ func (s *Scheduler) processPending(ctx context.Context) {
 
 						if loadedCount == 0 {
 							slog.Debug("cpu mode with first model, loading")
-							s.loadFn(pending, ggml, gpus, numParallel)
+							s.loadFn(lastLlama, pending, ggml, gpus, numParallel, false)
 							break
 						}
 						runnerToExpire = s.maybeFindCPURunnerToUnload(pending, ggml, gpus)
 						if runnerToExpire == nil {
 							slog.Debug("cpu mode with available system memory or first model, loading")
-							s.loadFn(pending, ggml, gpus, numParallel)
+							s.loadFn(lastLlama, pending, ggml, gpus, numParallel, false)
 							break
 						}
 						// else we need to expire a runner
-					} else if loadedCount == 0 {
+					} else*/
+
+					if loadedCount == 0 {
 						// No models loaded. Load the model but prefer the best fit.
 						slog.Debug("loading first model", "model", pending.model.ModelPath)
-						g := pickBestFullFitByLibrary(pending, ggml, gpus, &numParallel)
-						if g != nil {
-							gpus = g
-						} else {
-							// Only allow partial loads when this is the first model
-							gpus = pickBestPartialFitByLibrary(pending, ggml, gpus, &numParallel)
-						}
-						s.loadFn(pending, ggml, gpus, numParallel)
+						s.loadFn(pending, ggml, gpus, numParallel, false)
 						break
 					}
 
-					if runnerToExpire == nil {
-						// More than one loaded model, so we have to see if the
-						// new one fits
-						//
-						// We want to avoid loading on any GPUs that have other
-						// models still loading on them to avoid potential races
-						// with VRAM consumption ramping up during load
-						availGpus := s.filterGPUsWithoutLoadingModels(gpus)
+					// More than one loaded model, so we have to see if the
+					// new one fits
+					//
+					// We want to avoid loading on any GPUs that have other
+					// models still loading on them to avoid potential races
+					// with VRAM consumption ramping up during load
+					//availGpus := s.filterGPUsWithoutLoadingModels(gpus)
 
-						// Update free memory from currently loaded models
-						s.updateFreeSpace(availGpus)
-						fitGpus := pickBestFullFitByLibrary(pending, ggml, availGpus, &numParallel)
-						if fitGpus != nil {
-							slog.Debug("new model fits with existing models, loading")
-							s.loadFn(pending, ggml, fitGpus, numParallel)
-							break
-						}
-
-						// We couldn't find a set of GPUs to fully load the new
-						// model. If no other models are loading (both GPU lists
-						// are the same) then we need to unload another model to
-						// make room
-						if len(availGpus) < len(gpus) {
-							// There are other requests pending, and this one
-							// needs more time, so put it on the back of the
-							// queue so that we might satisfy other pending
-							// requests that aren't blocked
-							go func() {
-								// Process in a go routine to avoid deadlocking
-								// the scheduler if our queue is full
-								slog.Debug("delaying scheduling while other models finish loading", "attempts", pending.schedAttempts, "model", pending.model.ModelPath)
-								time.Sleep(s.reschedDelay)
-								s.pendingReqCh <- pending
-							}()
-							break
-						}
-						runnerToExpire = s.findRunnerToUnload()
+					s.loadFn(pending, ggml, gpus, numParallel, true)
+					if s.loaded[pending.model.ModelPath] != nil {
+						break
 					}
+
+					/*fitGpus := pickBestFullFitByLibrary(pending, ggml, gpus, &numParallel)
+					if fitGpus != nil {
+						slog.Debug("new model fits with existing models, loading")
+						s.loadFn(pending, ggml, fitGpus, numParallel, true)
+						break
+					}*/
+
+					// We couldn't find a set of GPUs to fully load the new
+					// model. If no other models are loading (both GPU lists
+					// are the same) then we need to unload another model to
+					// make room
+					/*if len(availGpus) < len(gpus) {
+						// There are other requests pending, and this one
+						// needs more time, so put it on the back of the
+						// queue so that we might satisfy other pending
+						// requests that aren't blocked
+						go func() {
+							// Process in a go routine to avoid deadlocking
+							// the scheduler if our queue is full
+							slog.Debug("delaying scheduling while other models finish loading", "attempts", pending.schedAttempts, "model", pending.model.ModelPath)
+							time.Sleep(s.reschedDelay)
+							s.pendingReqCh <- pending
+						}()
+						break
+					}*/
+					runnerToExpire = s.findRunnerToUnload()
 				}
 
 				if runnerToExpire == nil {
@@ -436,7 +439,7 @@ func (pending *LlmRequest) useLoadedRunner(runner *runnerRef, finished chan *Llm
 	}()
 }
 
-func (s *Scheduler) load(req *LlmRequest, f *ggml.GGML, gpus discover.GpuInfoList, numParallel int) {
+func (s *Scheduler) load(req *LlmRequest, f *ggml.GGML, gpus discover.GpuInfoList, numParallel int, requireFull bool) {
 	if numParallel < 1 {
 		numParallel = 1
 	}
@@ -444,18 +447,42 @@ func (s *Scheduler) load(req *LlmRequest, f *ggml.GGML, gpus discover.GpuInfoLis
 	if req.sessionDuration != nil {
 		sessionDuration = req.sessionDuration.Duration
 	}
-	llama, err := s.newServerFn(gpus, req.model.ModelPath, f, req.model.AdapterPaths, req.model.ProjectorPaths, req.opts, numParallel)
-	if err != nil {
-		// some older models are not compatible with newer versions of llama.cpp
-		// show a generalized compatibility error until there is a better way to
-		// check for model compatibility
-		if errors.Is(err, ggml.ErrUnsupportedFormat) || strings.Contains(err.Error(), "failed to load model") {
-			err = fmt.Errorf("%v: this model may be incompatible with your version of Ollama. If you previously pulled this model, try updating it by running `ollama pull %s`", err, req.model.ShortName)
+	if s.activeLoading == nil {
+		var err error
+		s.activeLoading, err = s.newServerFn(gpus, req.model.ModelPath, f, req.model.AdapterPaths, req.model.ProjectorPaths, req.opts, numParallel)
+		if err != nil {
+			// some older models are not compatible with newer versions of llama.cpp
+			// show a generalized compatibility error until there is a better way to
+			// check for model compatibility
+			if errors.Is(err, ggml.ErrUnsupportedFormat) || strings.Contains(err.Error(), "failed to load model") {
+				err = fmt.Errorf("%v: this model may be incompatible with your version of Ollama. If you previously pulled this model, try updating it by running `ollama pull %s`", err, req.model.ShortName)
+			}
+			slog.Info("NewLlamaServer failed", "model", req.model.ModelPath, "error", err)
+			req.errCh <- err
+			return
 		}
-		slog.Info("NewLlamaServer failed", "model", req.model.ModelPath, "error", err)
+	}
+
+	// Update free memory from currently loaded models
+	s.updateFreeSpace(gpus)
+
+	// TODO: Ensure this gets cleaned up
+	err := s.activeLoading.Load(gpus, requireFull)
+	if err != nil {
+		if errors.Is(err, llm.ErrRequiredFull) {
+			return
+		}
+
+		slog.Info("Load failed", "model", req.model.ModelPath, "error", err)
+		s.activeLoading.Close()
+		s.activeLoading = nil
 		req.errCh <- err
 		return
 	}
+
+	llama := s.activeLoading
+	s.activeLoading = nil
+
 	runner := &runnerRef{
 		model:           req.model,
 		modelPath:       req.model.ModelPath,

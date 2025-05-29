@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -32,6 +33,7 @@ import (
 	"github.com/ollama/ollama/fs/ggml"
 	"github.com/ollama/ollama/llama"
 	"github.com/ollama/ollama/logutil"
+	"github.com/ollama/ollama/ml"
 	"github.com/ollama/ollama/model"
 )
 
@@ -63,6 +65,7 @@ func (e filteredEnv) LogValue() slog.Value {
 }
 
 type LlamaServer interface {
+	Load(gpus discover.GpuInfoList, requireFull bool) error
 	Ping(ctx context.Context) error
 	WaitUntilRunning(ctx context.Context) error
 	Completion(ctx context.Context, req CompletionRequest, fn func(CompletionResponse)) error
@@ -95,7 +98,7 @@ type llmServer struct {
 	// nil if this server is running the llama.cpp based engine
 	textProcessor model.TextProcessor
 
-	estimate    MemoryEstimate
+	//estimate    MemoryEstimate
 	totalLayers uint64
 	// gpuCount     int
 	gpus         discover.GpuInfoList // Recorded just before the model loaded, free space will be incorrect
@@ -103,6 +106,8 @@ type llmServer struct {
 	loadProgress float32
 
 	sem *semaphore.Weighted
+
+	mem *ml.BackendMemory
 }
 
 // LoadModel will load a model from disk. The model must be in the GGML format.
@@ -139,7 +144,7 @@ func NewLlamaServer(gpus discover.GpuInfoList, modelPath string, f *ggml.GGML, a
 		gpus = discover.GetCPUInfo()
 	}
 
-	estimate := EstimateGPULayers(gpus, f, projectors, opts, numParallel)
+	/*estimate := EstimateGPULayers(gpus, f, projectors, opts, numParallel)
 	if len(gpus) > 1 || gpus[0].Library != "cpu" {
 		switch {
 		case gpus[0].Library == "metal" && estimate.VRAMSize > systemTotalMemory:
@@ -165,9 +170,13 @@ func NewLlamaServer(gpus discover.GpuInfoList, modelPath string, f *ggml.GGML, a
 		}
 	}
 
-	slog.Info("offload", "", estimate)
+	slog.Info("offload", "", estimate)*/
 
 	params := []string{
+		"--model", modelPath,
+	}
+
+	/*params := []string{
 		"--model", modelPath,
 		"--ctx-size", strconv.Itoa(opts.NumCtx),
 		"--batch-size", strconv.Itoa(opts.NumBatch),
@@ -252,7 +261,7 @@ func NewLlamaServer(gpus discover.GpuInfoList, modelPath string, f *ggml.GGML, a
 
 	if envconfig.MultiUserCache() {
 		params = append(params, "--multiuser-cache")
-	}
+	}*/
 
 	libs := make(map[string]string)
 	if entries, err := os.ReadDir(discover.LibOllamaPath); err == nil {
@@ -380,12 +389,12 @@ func NewLlamaServer(gpus discover.GpuInfoList, modelPath string, f *ggml.GGML, a
 			modelPath:     modelPath,
 			llamaModel:    llamaModel,
 			textProcessor: textProcessor,
-			estimate:      estimate,
-			numParallel:   numParallel,
-			sem:           semaphore.NewWeighted(int64(numParallel)),
-			totalLayers:   f.KV().BlockCount() + 1,
-			gpus:          gpus,
-			done:          make(chan error, 1),
+			//estimate:      estimate,
+			numParallel: numParallel,
+			sem:         semaphore.NewWeighted(int64(numParallel)),
+			totalLayers: f.KV().BlockCount() + 1,
+			gpus:        gpus,
+			done:        make(chan error, 1),
 		}
 
 		s.cmd.Env = os.Environ()
@@ -399,20 +408,20 @@ func NewLlamaServer(gpus discover.GpuInfoList, modelPath string, f *ggml.GGML, a
 		for _, gpu := range gpus {
 			envWorkarounds = append(envWorkarounds, gpu.EnvWorkarounds...)
 		}
-		visibleDevicesEnv, visibleDevicesEnvVal := gpus.GetVisibleDevicesEnv()
+		//visibleDevicesEnv, visibleDevicesEnvVal := gpus.GetVisibleDevicesEnv()
 		pathEnvVal := strings.Join(libraryPaths, string(filepath.ListSeparator))
 
 		// Update or add the path and visible devices variable with our adjusted version
 		pathNeeded := true
-		devicesNeeded := visibleDevicesEnv != ""
+		//devicesNeeded := visibleDevicesEnv != ""
 		for i := range s.cmd.Env {
 			cmp := strings.SplitN(s.cmd.Env[i], "=", 2)
 			if strings.EqualFold(cmp[0], pathEnv) {
 				s.cmd.Env[i] = pathEnv + "=" + pathEnvVal
 				pathNeeded = false
-			} else if devicesNeeded && strings.EqualFold(cmp[0], visibleDevicesEnv) {
-				s.cmd.Env[i] = visibleDevicesEnv + "=" + visibleDevicesEnvVal
-				devicesNeeded = false
+				//} else if devicesNeeded && strings.EqualFold(cmp[0], visibleDevicesEnv) {
+				//	s.cmd.Env[i] = visibleDevicesEnv + "=" + visibleDevicesEnvVal
+				//	devicesNeeded = false
 			} else if len(envWorkarounds) != 0 {
 				for _, kv := range envWorkarounds {
 					if strings.EqualFold(cmp[0], kv[0]) {
@@ -424,9 +433,9 @@ func NewLlamaServer(gpus discover.GpuInfoList, modelPath string, f *ggml.GGML, a
 		if pathNeeded {
 			s.cmd.Env = append(s.cmd.Env, pathEnv+"="+pathEnvVal)
 		}
-		if devicesNeeded {
+		/*if devicesNeeded {
 			s.cmd.Env = append(s.cmd.Env, visibleDevicesEnv+"="+visibleDevicesEnvVal)
-		}
+		}*/
 
 		slog.Info("starting llama server", "cmd", s.cmd)
 		slog.Debug("subprocess", "", filteredEnv(s.cmd.Env))
@@ -466,6 +475,335 @@ func NewLlamaServer(gpus discover.GpuInfoList, modelPath string, f *ggml.GGML, a
 
 		return s, nil
 	}
+}
+
+var ErrRequiredFull = errors.New("unable to load full model on GPU")
+
+func (s *llmServer) Load(gpus discover.GpuInfoList, requireFull bool) error {
+	// TODO: LoRA
+	var adapters []string
+
+	systemInfo := discover.GetSystemInfo()
+	systemFreeMemory := systemInfo.System.FreeMemory
+
+	// TODO: System memory checks
+
+	// TODO: If we have a previous allocation still in progress and we updated the free memory,
+	// the model will now be double counted
+
+	for {
+		_, err := s.getServerStatus(context.TODO())
+		if err == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	defaultThreads := systemInfo.GetOptimalThreadCount()
+	var threads int
+	if s.options.NumThread > 0 {
+		threads = s.options.NumThread
+	} else if defaultThreads > 0 {
+		threads = defaultThreads
+	}
+
+	// TODO: Adjust numParallel
+	// TODO: Many of these parameters need some preprocessing
+	req := LoadRequest{LoraPath: adapters, KvSize: s.options.NumCtx, KvCacheType: strings.ToLower(envconfig.KvCacheType()), BatchSize: s.options.NumBatch,
+		NumThreads: threads, Parallel: s.numParallel, FlashAttention: envconfig.FlashAttention(), MultiUserCache: envconfig.MultiUserCache()}
+
+	pastAllocations := make(map[uint64]struct{})
+	var bestAllocation ml.GPULayersList
+	var backoff float32
+
+	gpuLayers, err := s.fitGPU(gpus, systemFreeMemory, s.mem, requireFull, backoff)
+	if err != nil {
+		return err
+	}
+
+	for {
+		req.GPULayers = gpuLayers
+		resp, err := s.initModel(req, false)
+		if err != nil {
+			return err
+		}
+
+		slog.Debug("memory", "success", resp.Success, "required", resp.Memory)
+
+		// Don't consider layouts done without model memory data as candidates for best
+		if s.mem != nil {
+			pastAllocations[gpuLayers.Hash()] = struct{}{}
+			if resp.Success && gpuLayers.Sum() > bestAllocation.Sum() {
+				bestAllocation = gpuLayers
+			}
+		}
+
+		s.mem = &resp.Memory
+		newGPULayers, err := s.fitGPU(gpus, systemFreeMemory, s.mem, requireFull, backoff)
+		if err != nil {
+			return err
+		}
+
+		if _, ok := pastAllocations[newGPULayers.Hash()]; ok {
+			if bestAllocation != nil {
+				req.GPULayers = bestAllocation
+				break
+			}
+
+			// Memory allocation failed even though we created a layout that we think should
+			// fit in available memory. This could happen if either our free memory reports
+			// are incorrect or if available memory is changing between layout and allocation
+			// time. Apply an exponential backoff to try to find the real amount of available
+			// space.
+			if backoff == 0 {
+				backoff = 0.01
+			} else {
+				backoff *= 2
+			}
+
+			if backoff > 1 {
+				return errors.New("memory layout cannot be allocated")
+			}
+
+			slog.Info("model layout did not fit, applying backoff", "backoff", backoff)
+			clear(pastAllocations)
+		}
+
+		gpuLayers = newGPULayers
+	}
+
+	_, err = s.initModel(req, true)
+
+	return err
+}
+
+func fit(layers []uint64, gpus discover.GpuInfoList, capacity float32, requestedLayers int) (gpuLayers ml.GPULayersList) {
+	device := len(gpus) - 1
+	gpuLayers = ml.GPULayersList{{UUID: gpus[device].ID}}
+	freeSpace := float32(gpus[device].FreeMemory) * capacity
+	for i := len(layers) - 1; i >= 0; i-- {
+		if requestedLayers >= 0 && len(layers)-1-i >= requestedLayers {
+			break
+		}
+
+		for {
+			if float32(layers[i]) <= freeSpace {
+				gpuLayers[0].Layers = append([]int{i}, gpuLayers[0].Layers...)
+				freeSpace -= float32(layers[i])
+				break
+			}
+
+			device--
+			if device < 0 {
+				return gpuLayers
+			}
+			gpuLayers = append(ml.GPULayersList{{UUID: gpus[device].ID}}, gpuLayers...)
+			freeSpace = float32(gpus[device].FreeMemory) * capacity
+		}
+	}
+
+	return gpuLayers
+}
+
+func distributeGPU(layers []uint64, gpus discover.GpuInfoList, requestedLayers int) (gpuLayers ml.GPULayersList) {
+	var high float32 = 1
+	var low float32 = 0
+
+	bestAssignemnts := fit(layers, gpus, high, requestedLayers)
+	maxNumGPU := bestAssignemnts.Sum()
+	if maxNumGPU == 0 {
+		return bestAssignemnts
+	}
+
+	for high-low > 1e-6 {
+		mid := (low + high) / 2
+		assignemnts := fit(layers, gpus, mid, requestedLayers)
+		if assignemnts.Sum() == maxNumGPU {
+			high = mid
+			bestAssignemnts = assignemnts
+		} else {
+			low = mid
+		}
+	}
+
+	return bestAssignemnts
+}
+
+func assignLayers(layers []uint64, gpus discover.GpuInfoList, requestedLayers int, lastUsedGPU int) (gpuLayers ml.GPULayersList) {
+	if !envconfig.SchedSpread() {
+		for i := lastUsedGPU; i < len(gpus); i++ {
+			// Try to pack things into as few GPUs as possible
+			gpuLayers = distributeGPU(layers, gpus[:i+1], requestedLayers)
+			if gpuLayers.Sum() == len(layers) {
+				break
+			}
+		}
+	} else {
+		gpuLayers = distributeGPU(layers, gpus, requestedLayers)
+	}
+
+	if gpuLayers.Sum() < len(layers) {
+		// If we can't fit everything then prefer offloading layers other than the output layer
+		gpuLayers = distributeGPU(layers[:len(layers)-1], gpus, requestedLayers)
+	}
+
+	return gpuLayers
+}
+
+func (s *llmServer) fitGPU(systemGPUs discover.GpuInfoList, systemFreeMemory uint64, memory *ml.BackendMemory, requireFull bool, backoff float32) (ml.GPULayersList, error) {
+	totalLayers := int(s.totalLayers)
+	if s.options.NumGPU >= 0 {
+		totalLayers = s.options.NumGPU
+	}
+
+	if totalLayers == 0 || len(systemGPUs) == 0 {
+		return nil, nil
+	}
+
+	gpus := append(make(discover.GpuInfoList, 0, len(systemGPUs)), systemGPUs...)
+	sort.Sort(sort.Reverse(discover.ByFreeMemory(gpus)))
+
+	// TODO: SCHED_SPREAD first bounce?
+	fullOffloadLayers := make([]int, totalLayers)
+	for i := range totalLayers {
+		fullOffloadLayers[i] = i
+	}
+	fullOffload := []ml.GPULayers{{UUID: gpus[0].ID, Layers: fullOffloadLayers}}
+
+	if memory == nil {
+		return fullOffload, nil
+	}
+
+	// TODO: The graph placement needs to be improved to prevent thrashing
+	layers := make([]uint64, len(memory.CPU.Weights))
+	var maxGraph uint64
+	for i := range layers {
+		for j := range memory.GPUs {
+			layers[i] += memory.GPUs[j].Weights[i].Size
+			layers[i] += memory.GPUs[j].Cache[i].Size
+			maxGraph = max(maxGraph, memory.GPUs[j].Graph.Size)
+		}
+		layers[i] += memory.CPU.Weights[i].Size
+		layers[i] += memory.CPU.Cache[i].Size
+		maxGraph = max(maxGraph, memory.CPU.Graph.Size)
+	}
+
+	var gpuLayers ml.GPULayersList
+	for _, gl := range gpus.ByLibrary() {
+		// If a GPU already has a graph allocated on it, then we should continue to use it.
+		// Otherwise, we lose information that we got from previous allocations, which can
+		// cause cycling. Plus, we get more information about required allocation from each
+		// iteration, so it doesn't make sense that a later iteration would use fewer GPUs.
+		lastUsedGPU := 0
+		for i := range gl {
+			found := false
+			for j := range memory.GPUs {
+				if gl[i].ID == memory.GPUs[j].UUID {
+					gpuGraph := memory.GPUs[j].Graph.Size
+					if gpuGraph == 0 {
+						gpuGraph = maxGraph
+					} else {
+						lastUsedGPU = i
+					}
+
+					reserved := uint64(float32(gl[i].TotalMemory)*backoff) + gl[i].MinimumMemory + envconfig.GpuOverhead() + gpuGraph
+					if gl[i].FreeMemory > reserved {
+						gl[i].FreeMemory -= reserved
+					} else {
+						gl[i].FreeMemory = 0
+					}
+
+					slog.Debug("gpu", "id", gl[i].ID, "free", format.HumanBytes2(gl[i].FreeMemory))
+					found = true
+					break
+				}
+			}
+			if !found {
+				// The runner doesn't report seeing this GPU
+				gl[i].FreeMemory = 0
+			}
+		}
+
+		libraryGpuLayers := assignLayers(layers, gl, s.options.NumGPU, lastUsedGPU)
+		if libraryGpuLayers.Sum() > gpuLayers.Sum() {
+			gpuLayers = libraryGpuLayers
+		}
+	}
+
+	if requireFull {
+		if gpuLayers.Sum() < len(layers) && !(len(gpus) == 1 && gpus[0].Library == "cpu") {
+			return nil, ErrRequiredFull
+		}
+
+		cpuSize := memory.InputWeights.Size + memory.CPU.Graph.Size
+	nextLayer:
+		for i := range layers {
+			for _, g := range gpuLayers {
+				for _, gl := range g.Layers {
+					if i == gl {
+						continue nextLayer
+					}
+				}
+			}
+			cpuSize += layers[i]
+		}
+
+		if cpuSize > systemFreeMemory {
+			return nil, ErrRequiredFull
+		}
+	}
+
+	if len(gpuLayers) > 0 && len(layers) == len(gpuLayers[0].Layers) {
+		return fullOffload, nil
+	}
+
+	if gpuLayers.Sum() == 0 {
+		slog.Debug("insufficient VRAM to load any model layers")
+	}
+
+	return gpuLayers, nil
+}
+
+func (s *llmServer) initModel(req LoadRequest, commit bool) (*LoadResponse, error) {
+	req.Commit = commit
+
+	data, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("error marshaling load data: %w", err)
+	}
+
+	r, err := http.NewRequestWithContext(context.TODO(), http.MethodPost, fmt.Sprintf("http://127.0.0.1:%d/load", s.port), bytes.NewBuffer(data))
+	if err != nil {
+		return nil, fmt.Errorf("error creating load request: %w", err)
+	}
+	r.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(r)
+	if err != nil {
+		return nil, fmt.Errorf("do load request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if commit {
+		return nil, nil
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read load request: %w", err)
+	}
+
+	if resp.StatusCode >= 400 {
+		log.Printf("llm load error: %s", body)
+		return nil, fmt.Errorf("%s", body)
+	}
+
+	var llmResp LoadResponse
+	if err := json.Unmarshal(body, &llmResp); err != nil {
+		return nil, fmt.Errorf("health unmarshal load response: %w", err)
+	}
+
+	return &llmResp, nil
 }
 
 type ServerStatus int
@@ -584,6 +922,7 @@ func (s *llmServer) Ping(ctx context.Context) error {
 }
 
 func (s *llmServer) WaitUntilRunning(ctx context.Context) error {
+	// TODO: We should capture the entire loading time, including allocations
 	start := time.Now()
 	stallDuration := envconfig.LoadTimeout()    // If no progress happens
 	stallTimer := time.Now().Add(stallDuration) // give up if we stall
@@ -690,6 +1029,25 @@ type CompletionRequest struct {
 	Options *api.Options
 
 	Grammar string // set before sending the request to the subprocess
+}
+
+type LoadRequest struct {
+	Commit bool
+
+	LoraPath       []string
+	Parallel       int
+	BatchSize      int
+	FlashAttention bool
+	KvSize         int
+	KvCacheType    string
+	NumThreads     int
+	GPULayers      []ml.GPULayers
+	MultiUserCache bool
+}
+
+type LoadResponse struct {
+	Success bool
+	Memory  ml.BackendMemory
 }
 
 // DoneReason represents the reason why a completion response is done
@@ -1038,20 +1396,52 @@ func (s *llmServer) Close() error {
 }
 
 func (s *llmServer) EstimatedVRAM() uint64 {
-	return s.estimate.VRAMSize
+	if s.mem == nil {
+		return 0
+	}
+
+	var mem uint64
+
+	for _, g := range s.mem.GPUs {
+		mem += g.SumAllocated()
+	}
+
+	// Some elements are always on CPU. However, if we have allocated the first layer
+	// on the GPU then include these as well, to represent complete offloading.
+	if len(s.mem.CPU.Weights) > 0 {
+		if s.mem.CPU.Weights[0].Size == 0 && s.mem.CPU.Cache[0].Size == 0 {
+			mem += s.mem.InputWeights.Size
+			mem += s.mem.CPU.Graph.Size
+		}
+	}
+
+	return mem
 }
 
 func (s *llmServer) EstimatedTotal() uint64 {
-	return s.estimate.TotalSize
+	if s.mem == nil {
+		return 0
+	}
+
+	mem := s.mem.InputWeights.Size
+	mem += s.mem.CPU.SumAllocated()
+	for _, g := range s.mem.GPUs {
+		mem += g.SumAllocated()
+	}
+
+	return mem
 }
 
 func (s *llmServer) EstimatedVRAMByGPU(gpuID string) uint64 {
-	for i, gpu := range s.gpus {
-		if gpu.ID == gpuID {
-			if i < len(s.estimate.GPUSizes) {
-				return s.estimate.GPUSizes[i]
-			}
+	if s.mem == nil {
+		return 0
+	}
+
+	for _, g := range s.mem.GPUs {
+		if g.UUID == gpuID {
+			return g.SumAllocated()
 		}
 	}
+
 	return 0
 }

@@ -86,5 +86,9 @@ func (v Value) String() string {
 
 // Strings returns Value as a string slice. If it is not a string slice, it returns nil.
 func (v Value) Strings() (strings []string) {
+	if t, ok := v.value.(*lazy[string]); ok {
+		return slices.Collect(t.Values())
+	}
+
 	return values[string](v, reflect.String)
 }

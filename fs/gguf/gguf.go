@@ -40,7 +40,7 @@ type File struct {
 	offset    int64
 
 	file   *os.File
-	reader *readSeeker
+	reader *bufferedReader
 	bts    []byte
 }
 
@@ -51,7 +51,7 @@ func Open(path string) (f *File, err error) {
 		return nil, err
 	}
 
-	f.reader = newReadSeeker(f.file, 32<<10)
+	f.reader = newBufferedReader(f.file, 32<<10)
 
 	if err := binary.Read(f.reader, binary.LittleEndian, &f.Magic); err != nil {
 		return nil, err
@@ -75,10 +75,7 @@ func Open(path string) (f *File, err error) {
 	}
 
 	f.tensors.doneFunc = func() error {
-		offset, err := f.reader.Seek(0, io.SeekCurrent)
-		if err != nil {
-			return err
-		}
+		offset := f.reader.offset
 
 		alignment := cmp.Or(f.KeyValue("general.alignment").Int(), 32)
 		f.offset = offset + (alignment-offset%alignment)%alignment
@@ -189,20 +186,20 @@ func read[T any](f *File) (t T, err error) {
 }
 
 func readString(f *File) (string, error) {
-	n, err := read[uint64](f)
-	if err != nil {
+	bts := f.bts[:8]
+	if _, err := io.ReadFull(f.reader, bts); err != nil {
 		return "", err
 	}
 
+	n := binary.LittleEndian.Uint64(bts)
 	if int(n) > len(f.bts) {
 		f.bts = make([]byte, n)
 	}
 
-	bts := f.bts[:n]
+	bts = f.bts[:n]
 	if _, err := io.ReadFull(f.reader, bts); err != nil {
 		return "", err
 	}
-	defer clear(bts)
 
 	return string(bts), nil
 }
@@ -250,30 +247,44 @@ func readArray(f *File) (any, error) {
 
 func readArrayData[T any](f *File, n uint64) (s []T, err error) {
 	s = make([]T, n)
-	for i := range n {
-		e, err := read[T](f)
-		if err != nil {
-			return nil, err
-		}
-
-		s[i] = e
-	}
-
-	return s, nil
+	err = binary.Read(f.reader, binary.LittleEndian, s)
+	return s, err
 }
 
-func readArrayString(f *File, n uint64) (s []string, err error) {
-	s = make([]string, n)
-	for i := range n {
-		e, err := readString(f)
-		if err != nil {
+func readArrayString(f *File, n uint64) (*lazy[string], error) {
+	offset := f.reader.offset
+
+	var size int64
+	for range n {
+		bts := f.bts[:8]
+		if _, err := io.ReadFull(f.reader, bts); err != nil {
 			return nil, err
 		}
 
-		s[i] = e
+		n := int(binary.LittleEndian.Uint64(bts))
+		if _, err := f.reader.Discard(int(n)); err != nil {
+			return nil, err
+		}
+
+		size += 8 + int64(n)
 	}
 
-	return s, nil
+	next, stop := iter.Pull(func(yield func(string) bool) {
+		sr := io.NewSectionReader(f.file, offset, size)
+		f := File{reader: newBufferedReader(sr, 16<<10), bts: make([]byte, 4096)}
+		for range n {
+			s, err := readString(&f)
+			if err != nil {
+				return
+			}
+
+			if !yield(s) {
+				return
+			}
+		}
+	})
+
+	return &lazy[string]{count: n, next: next, stop: stop}, nil
 }
 
 func (f *File) Close() error {

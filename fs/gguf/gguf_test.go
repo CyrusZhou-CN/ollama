@@ -3,6 +3,7 @@ package gguf_test
 import (
 	"bytes"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -113,6 +114,10 @@ func TestRead(t *testing.T) {
 
 	if diff := cmp.Diff(f.KeyValue("tokenizer.ggml.tokens").Strings(), []string{"hello", "world"}); diff != "" {
 		t.Errorf("KeyValue(\"tokenizer.ggml.tokens\").Strings() mismatch (-got +want):\n%s", diff)
+	}
+
+	if diff := cmp.Diff(f.KeyValue("tokenizer.ggml.scores").Floats(), []float64{0, 1}); diff != "" {
+		t.Errorf("KeyValue(\"tokenizer.ggml.scores\").Ints() mismatch (-got +want):\n%s", diff)
 	}
 
 	var kvs []string
@@ -241,5 +246,45 @@ func BenchmarkRead(b *testing.B) {
 		}
 
 		f.Close()
+	}
+}
+
+func BenchmarkReadArray(b *testing.B) {
+	b.ReportAllocs()
+
+	create := func(tb testing.TB, kv ggml.KV) string {
+		tb.Helper()
+		f, err := os.CreateTemp(b.TempDir(), "")
+		if err != nil {
+			b.Fatal(err)
+		}
+		defer f.Close()
+
+		if err := ggml.WriteGGUF(f, kv, nil); err != nil {
+			b.Fatal(err)
+		}
+
+		return f.Name()
+	}
+
+	cases := map[string]any{
+		"int32":   slices.Repeat([]int32{42}, 1_000_000),
+		"uint32":  slices.Repeat([]uint32{42}, 1_000_000),
+		"float32": slices.Repeat([]float32{42.}, 1_000_000),
+		"string":  slices.Repeat([]string{"42"}, 1_000_000),
+	}
+
+	for name, tt := range cases {
+		b.Run(name, func(b *testing.B) {
+			p := create(b, ggml.KV{"array": tt})
+			for b.Loop() {
+				f, err := gguf.Open(p)
+				if err != nil {
+					b.Fatal(err)
+				}
+				_ = f.KeyValue("array")
+				f.Close()
+			}
+		})
 	}
 }

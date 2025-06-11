@@ -61,3 +61,45 @@ func TestWriteGGUF(t *testing.T) {
 		t.Errorf("Mismatch (-want +got):\n%s", diff)
 	}
 }
+
+func BenchmarkReadArray(b *testing.B) {
+	b.ReportAllocs()
+
+	create := func(tb testing.TB, kv KV) string {
+		tb.Helper()
+		f, err := os.CreateTemp(b.TempDir(), "")
+		if err != nil {
+			b.Fatal(err)
+		}
+		defer f.Close()
+
+		if err := WriteGGUF(f, kv, nil); err != nil {
+			b.Fatal(err)
+		}
+
+		return f.Name()
+	}
+
+	cases := map[string]any{
+		"int32":   slices.Repeat([]int32{42}, 1_000_000),
+		"uint32":  slices.Repeat([]uint32{42}, 1_000_000),
+		"float32": slices.Repeat([]float32{42.}, 1_000_000),
+		"string":  slices.Repeat([]string{"42"}, 1_000_000),
+	}
+
+	for name, tt := range cases {
+		b.Run(name, func(b *testing.B) {
+			p := create(b, KV{"array": tt})
+			for b.Loop() {
+				f, err := os.Open(p)
+				if err != nil {
+					b.Fatal(err)
+				}
+				if _, err := Decode(f, -1); err != nil {
+					b.Fatal(err)
+				}
+				f.Close()
+			}
+		})
+	}
+}

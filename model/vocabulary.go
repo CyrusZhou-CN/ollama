@@ -49,7 +49,7 @@ func (v *Vocabulary) addSpecials(ids []int32) []int32 {
 			slog.Warn("adding bos token to prompt which already has it", "id", v.BOS)
 		}
 
-		slog.Debug("adding bos token to prompt", "id", v.BOS)
+		slog.Debug("adding bos token to prompt", "id", v.BOS[0])
 		ids = append([]int32{v.BOS[0]}, ids...)
 	}
 
@@ -58,7 +58,7 @@ func (v *Vocabulary) addSpecials(ids []int32) []int32 {
 			slog.Warn("adding eos token to prompt which already has it", "id", v.EOS)
 		}
 
-		slog.Debug("adding eos token to prompt", "id", v.EOS)
+		slog.Debug("adding eos token to prompt", "id", v.EOS[0])
 		ids = append(ids, v.EOS[0])
 	}
 
@@ -87,7 +87,7 @@ func (v *Vocabulary) Decode(id int32) string {
 func (v *Vocabulary) SpecialVocabulary() []string {
 	v.specialOnce.Do(func() {
 		for i := range v.Values {
-			if v.Types[i] == TOKEN_TYPE_CONTROL {
+			if v.Types[i] == TOKEN_TYPE_CONTROL || v.Types[i] == TOKEN_TYPE_USER_DEFINED {
 				v.special = append(v.special, v.Values[i])
 			}
 		}

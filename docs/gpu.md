@@ -1,12 +1,14 @@
 # GPU
 ## Nvidia
-Ollama supports Nvidia GPUs with compute capability 5.0+.
+Ollama supports Nvidia GPUs with compute capability 5.0+ and driver version 531 and newer.
 
 Check your compute compatibility to see if your card is supported:
 [https://developer.nvidia.com/cuda-gpus](https://developer.nvidia.com/cuda-gpus)
 
 | Compute Capability | Family              | Cards                                                                                                       |
 | ------------------ | ------------------- | ----------------------------------------------------------------------------------------------------------- |
+| 12.0               | GeForce RTX 50xx    | `RTX 5060` `RTX 5060 Ti` `RTX 5070` `RTX 5070 Ti` `RTX 5080` `RTX 5090`                                     |
+|                    | NVIDIA Professioal  | `RTX PRO 4000 Blackwell` `RTX PRO 4500 Blackwell` `RTX PRO 5000 Blackwell` `RTX PRO 6000 Blackwell`         |
 | 9.0                | NVIDIA              | `H200` `H100`                                                                                               |
 | 8.9                | GeForce RTX 40xx    | `RTX 4090` `RTX 4080 SUPER` `RTX 4080` `RTX 4070 Ti SUPER` `RTX 4070 Ti` `RTX 4070 SUPER` `RTX 4070` `RTX 4060 Ti` `RTX 4060`  |
 |                    | NVIDIA Professional | `L4` `L40` `RTX 6000`                                                                                       |
@@ -49,20 +51,23 @@ sudo modprobe nvidia_uvm`
 Ollama supports the following AMD GPUs:
 
 ### Linux Support
-| Family         | Cards and accelerators                                                                                                               |
-| -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| AMD Radeon RX  | `7900 XTX` `7900 XT` `7900 GRE` `7800 XT` `7700 XT` `7600 XT` `7600` `6950 XT` `6900 XTX` `6900XT` `6800 XT` `6800` `Vega 64` `Vega 56`    |
-| AMD Radeon PRO | `W7900` `W7800` `W7700` `W7600` `W7500` `W6900X` `W6800X Duo` `W6800X` `W6800` `V620` `V420` `V340` `V320` `Vega II Duo` `Vega II` `VII` `SSG` |
-| AMD Instinct   | `MI300X` `MI300A` `MI300` `MI250X` `MI250` `MI210` `MI200` `MI100` `MI60` `MI50`                                                               |
+| Family         | Cards and accelerators                                                                                               |
+| -------------- | -------------------------------------------------------------------------------------------------------------------- |
+| AMD Radeon RX  | `7900 XTX` `7900 XT` `7900 GRE` `7800 XT` `7700 XT` `7600 XT` `7600` `6950 XT` `6900 XTX` `6900XT` `6800 XT` `6800`  |
+| AMD Radeon PRO | `W7900` `W7800` `W7700` `W7600` `W7500` `W6900X` `W6800X Duo` `W6800X` `W6800` `V620` `V420` `V340` `V320`           |
+| AMD Instinct   | `MI300X` `MI300A` `MI300` `MI250X` `MI250` `MI210` `MI200` `MI100`                                                   |
 
 ### Windows Support
-With ROCm v6.1, the following GPUs are supported on Windows.
+With ROCm v6.2, the following GPUs are supported on Windows.
 
 | Family         | Cards and accelerators                                                                                                               |
 | -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
 | AMD Radeon RX  | `7900 XTX` `7900 XT` `7900 GRE` `7800 XT` `7700 XT` `7600 XT` `7600` `6950 XT` `6900 XTX` `6900XT` `6800 XT` `6800`    |
 | AMD Radeon PRO | `W7900` `W7800` `W7700` `W7600` `W7500` `W6900X` `W6800X Duo` `W6800X` `W6800` `V620` |
 
+### Known Workarounds
+
+- The RX Vega 56 requires `HSA_ENABLE_SDMA=0` to disable SDMA
 
 ### Overrides on Linux
 Ollama leverages the AMD ROCm library, which does not support all AMD GPUs. In
@@ -83,8 +88,6 @@ At this time, the known supported GPU types on linux are the following LLVM Targ
 This table shows some example GPUs that map to these LLVM targets:
 | **LLVM Target** | **An Example GPU** |
 |-----------------|---------------------|
-| gfx900 | Radeon RX Vega 56 |
-| gfx906 | Radeon Instinct MI50 |
 | gfx908 | Radeon Instinct MI100 |
 | gfx90a | Radeon Instinct MI210 |
 | gfx940 | Radeon Instinct MI300 |

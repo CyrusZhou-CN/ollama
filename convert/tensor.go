@@ -2,7 +2,9 @@ package convert
 
 import (
 	"cmp"
+	"io"
 	"iter"
+	"path"
 	"slices"
 	"strings"
 
@@ -14,7 +16,8 @@ import (
 
 type split struct {
 	*strings.Replacer
-	dim int
+	dim    int
+	slices []tensor.Slice
 
 	// fn is an optional function to apply to the tensor after slicing
 	fn func(tensor.Tensor) (tensor.Tensor, error)
@@ -30,9 +33,12 @@ func splitDim(t Tensor, dim int, splits ...split) iter.Seq[*ggml.Tensor] {
 			shape := slices.Clone(t.Shape())
 			shape[dim] = cmp.Or(uint64(split.dim), shape[dim]/uint64(len(splits)))
 
-			slice := slices.Repeat([]tensor.Slice{nil}, len(shape))
-			slice[dim] = tensor.S(offset, offset+int(shape[dim]))
-			offset += int(shape[dim])
+			slice := split.slices
+			if len(slice) == 0 {
+				slice = slices.Repeat([]tensor.Slice{nil}, len(shape))
+				slice[dim] = tensor.S(offset, offset+int(shape[dim]))
+				offset += int(shape[dim])
+			}
 
 			t.SetRepacker(func(_ string, data []float32, shape []uint64) ([]float32, error) {
 				dims := make([]int, len(shape))
@@ -73,4 +79,55 @@ func splitDim(t Tensor, dim int, splits ...split) iter.Seq[*ggml.Tensor] {
 			}
 		}
 	}
+}
+
+type merge struct {
+	pattern, name string
+}
+
+// mergeTensors merges tensors that match a given pattern into a single tensor.
+func mergeTensors(unmatched []Tensor, merges ...merge) (out []*ggml.Tensor, _ []Tensor) {
+	var matched []Tensor
+	for i := range merges {
+		matched, unmatched = slicesSplitFunc(unmatched, func(t Tensor) bool {
+			matched, _ := path.Match(merges[i].pattern, t.Name())
+			return matched
+		})
+
+		if len(matched) > 0 {
+			out = append(out, &ggml.Tensor{
+				Name:     merges[i].name,
+				Kind:     matched[0].Kind(),
+				Shape:    append([]uint64{uint64(len(matched))}, matched[0].Shape()...),
+				WriterTo: mergeGroup(matched),
+			})
+		}
+	}
+
+	return out, unmatched
+}
+
+// slicesSplitFunc splits a slice into two slices based on a predicate function.
+func slicesSplitFunc[S ~[]E, E comparable](s S, fn func(e E) bool) (matched, unmatched S) {
+	for _, e := range s {
+		if fn(e) {
+			matched = append(matched, e)
+		} else {
+			unmatched = append(unmatched, e)
+		}
+	}
+
+	return matched, unmatched
+}
+
+type mergeGroup []Tensor
+
+func (g mergeGroup) WriteTo(w io.Writer) (int64, error) {
+	for _, t := range g {
+		if _, err := t.WriteTo(w); err != nil {
+			return 0, err
+		}
+	}
+
+	return 0, nil
 }

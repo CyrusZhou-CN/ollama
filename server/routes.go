@@ -21,7 +21,7 @@ import (
 	"os/signal"
 	"slices"
 	"strings"
-	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -669,8 +669,7 @@ func (s *Server) EmbedHandler(c *gin.Context) {
 
 	var g errgroup.Group
 	embeddings := make([][]float32, len(input))
-	var totalTokens int
-	var mu sync.Mutex
+	var totalTokens uint64
 	for i, text := range input {
 		g.Go(func() error {
 			embedding, tokenCount, err := r.Embedding(c.Request.Context(), text, truncate)
@@ -683,15 +682,18 @@ func (s *Server) EmbedHandler(c *gin.Context) {
 				embedding = normalize(embedding[:req.Dimensions])
 			}
 			embeddings[i] = embedding
-			mu.Lock()
-			totalTokens += tokenCount
-			mu.Unlock()
+			atomic.AddUint64(&totalTokens, uint64(tokenCount))
 			return nil
 		})
 	}
 
 	if err := g.Wait(); err != nil {
-		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": strings.TrimSpace(err.Error())})
+		var serr api.StatusError
+		if errors.As(err, &serr) {
+			c.AbortWithStatusJSON(serr.StatusCode, gin.H{"error": strings.TrimSpace(serr.ErrorMessage)})
+		} else {
+			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": strings.TrimSpace(err.Error())})
+		}
 		return
 	}
 
@@ -700,7 +702,7 @@ func (s *Server) EmbedHandler(c *gin.Context) {
 		Embeddings:      embeddings,
 		TotalDuration:   time.Since(checkpointStart),
 		LoadDuration:    checkpointLoaded.Sub(checkpointStart),
-		PromptEvalCount: totalTokens,
+		PromptEvalCount: int(totalTokens),
 	}
 	c.JSON(http.StatusOK, resp)
 }

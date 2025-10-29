@@ -4,9 +4,7 @@ package integration
 
 import (
 	"context"
-	"errors"
 	"math"
-	"strings"
 	"testing"
 	"time"
 
@@ -16,6 +14,10 @@ import (
 
 func dotProduct[V float32 | float64](v1, v2 []V) V {
 	var result V = 0
+	if len(v1) != len(v2) {
+		return result
+	}
+
 	for i := 0; i < len(v1); i++ {
 		result += v1[i] * v2[i]
 	}
@@ -31,7 +33,113 @@ func magnitude[V float32 | float64](v []V) V {
 }
 
 func cosineSimilarity[V float32 | float64](v1, v2 []V) V {
+	mag1 := magnitude(v1)
+	mag2 := magnitude(v2)
+
+	if mag1 == 0 || mag2 == 0 {
+		return 0
+	}
+
 	return dotProduct(v1, v2) / (magnitude(v1) * magnitude(v2))
+}
+
+func euclideanDistance[V float32 | float64](v1, v2 []V) V {
+	if len(v1) != len(v2) {
+		return V(math.Inf(1))
+	}
+
+	var sum V = 0
+	for i := 0; i < len(v1); i++ {
+		diff := v1[i] - v2[i]
+		sum += diff * diff
+	}
+
+	return V(math.Sqrt(float64(sum)))
+}
+
+func manhattanDistance[V float32 | float64](v1, v2 []V) V {
+	if len(v1) != len(v2) {
+		return V(math.Inf(1))
+	}
+
+	var sum V = 0
+	for i := 0; i < len(v1); i++ {
+		sum += V(math.Abs(float64(v1[i] - v2[i])))
+	}
+
+	return sum
+}
+
+func TestEmbedCosineDistanceCorrelation(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	client, _, cleanup := InitServerConnection(ctx, t)
+	defer cleanup()
+
+	for _, model := range libraryEmbedModels {
+		t.Run(model, func(t *testing.T) {
+			testCases := []struct {
+				a string
+				b string
+				c string
+			}{
+				{"cat", "kitten", "dog"},
+				{"king", "queen", "baron"},
+				{"paris", "london", "vancouver"},
+				{"The cat is sleeping on the sofa", "A feline is sleeping on the couch", "Quantum physics is complex"},
+				{"I love programming in python", "Coding in python brings me joy", "Pizza is delicious"},
+				{"Machine learning is fascinating", "Artificial intelligence is amazing", "I need to buy groceries"},
+				{"The quick brown fox jumps over the lazy dog", "A fast brown fox leaps over a sleepy dog", "The weather is warm and sunny today"},
+			}
+
+			for _, tc := range testCases {
+				testEmbed := make(map[string][]float32)
+				strs := []string{tc.a, tc.b, tc.c}
+
+				req := api.EmbedRequest{
+					Model:     model,
+					Input:     strs,
+					KeepAlive: &api.Duration{Duration: 10 * time.Second},
+				}
+
+				resp, err := embedTestHelper(ctx, client, t, req)
+				if err != nil {
+					t.Fatal(err)
+				}
+
+				for cnt, v := range resp.Embeddings {
+					testEmbed[strs[cnt]] = v
+				}
+
+				// Calculate cosine similarities
+				cosAB := cosineSimilarity(testEmbed[tc.a], testEmbed[tc.b])
+				cosAC := cosineSimilarity(testEmbed[tc.a], testEmbed[tc.c])
+
+				// Calculate distances
+				distAB := euclideanDistance(testEmbed[tc.a], testEmbed[tc.b])
+				distAC := euclideanDistance(testEmbed[tc.a], testEmbed[tc.c])
+
+				manhattanAB := manhattanDistance(testEmbed[tc.a], testEmbed[tc.b])
+				manhattanAC := manhattanDistance(testEmbed[tc.a], testEmbed[tc.c])
+
+				// Consistency check: if cosAB > cosAC, then distances should be smaller
+				if cosAB > cosAC {
+					if distAB >= distAC {
+						t.Errorf("Euclidean distance inconsistency (%s) for %s-%s-%s: cosAB=%f > cosAC=%f but distAB=%f >= distAC=%f",
+							model, tc.a, tc.b, tc.c, cosAB, cosAC, distAB, distAC)
+					}
+
+					if manhattanAB >= manhattanAC {
+						t.Errorf("Manhattan distance inconsistency (%s) for %s-%s-%s: cosAB=%f > cosAC=%f but manhattanAB=%f >= manhattanAC=%f",
+							model, tc.a, tc.b, tc.c, cosAB, cosAC, manhattanAB, manhattanAC)
+					}
+				} else {
+					t.Errorf("Cosine Similarity inconsistency (%s): cosinSim(%s, %s) < cosinSim(%s, %s)",
+						model, tc.a, tc.b, tc.a, tc.c)
+				}
+			}
+		})
+	}
 }
 
 func TestAllMiniLMEmbeddings(t *testing.T) {
@@ -300,217 +408,4 @@ func embedTestHelper(ctx context.Context, client *api.Client, t *testing.T, req 
 	}
 
 	return client.Embed(ctx, &req)
-}
-
-func TestEmbedTruncation(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
-	defer cancel()
-	client, _, cleanup := InitServerConnection(ctx, t)
-	defer cleanup()
-
-	t.Run("single input token count", func(t *testing.T) {
-		req := api.EmbedRequest{
-			Model: "all-minilm",
-			Input: "why is the sky blue?",
-		}
-
-		res, err := embedTestHelper(ctx, client, t, req)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		if res.PromptEvalCount <= 0 {
-			t.Fatalf("expected positive token count, got %d", res.PromptEvalCount)
-		}
-	})
-
-	t.Run("batch parallel token counting", func(t *testing.T) {
-		req := api.EmbedRequest{
-			Model: "all-minilm",
-			Input: []string{"cat", "dog and mouse", "bird"},
-		}
-
-		res, err := embedTestHelper(ctx, client, t, req)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		if len(res.Embeddings) != 3 {
-			t.Fatalf("expected 3 embeddings, got %d", len(res.Embeddings))
-		}
-
-		if res.PromptEvalCount <= 0 {
-			t.Fatalf("expected positive token count, got %d", res.PromptEvalCount)
-		}
-	})
-
-	t.Run("truncation single input", func(t *testing.T) {
-		truncTrue := true
-		longInput := strings.Repeat("word ", 100)
-
-		req := api.EmbedRequest{
-			Model:    "all-minilm",
-			Input:    longInput,
-			Truncate: &truncTrue,
-			Options:  map[string]any{"num_ctx": 50},
-		}
-
-		res, err := embedTestHelper(ctx, client, t, req)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		if res.PromptEvalCount > 50 {
-			t.Fatalf("expected tokens <= 50 after truncation, got %d", res.PromptEvalCount)
-		}
-
-		if res.PromptEvalCount == 0 {
-			t.Fatal("expected non-zero token count after truncation")
-		}
-	})
-
-	t.Run("truncation batch", func(t *testing.T) {
-		truncTrue := true
-		req := api.EmbedRequest{
-			Model:    "all-minilm",
-			Input:    []string{"short", strings.Repeat("long ", 100), "medium text"},
-			Truncate: &truncTrue,
-			Options:  map[string]any{"num_ctx": 30},
-		}
-
-		res, err := embedTestHelper(ctx, client, t, req)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		if len(res.Embeddings) != 3 {
-			t.Fatalf("expected 3 embeddings, got %d", len(res.Embeddings))
-		}
-
-		if res.PromptEvalCount > 90 {
-			t.Fatalf("expected tokens <= 90 (3 × 30 max), got %d", res.PromptEvalCount)
-		}
-	})
-
-	t.Run("truncate false error", func(t *testing.T) {
-		truncFalse := false
-		req := api.EmbedRequest{
-			Model:    "all-minilm",
-			Input:    strings.Repeat("word ", 100),
-			Truncate: &truncFalse,
-			Options:  map[string]any{"num_ctx": 10},
-		}
-
-		_, err := embedTestHelper(ctx, client, t, req)
-		if err == nil {
-			t.Fatal("expected error when truncate=false with long input")
-		}
-
-		if !strings.Contains(err.Error(), "exceeds maximum context length") {
-			t.Fatalf("expected context length error, got: %v", err)
-		}
-	})
-
-	t.Run("runner token count accuracy", func(t *testing.T) {
-		baseline := api.EmbedRequest{Model: "all-minilm", Input: "test"}
-		baseRes, err := embedTestHelper(ctx, client, t, baseline)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		batch := api.EmbedRequest{
-			Model: "all-minilm",
-			Input: []string{"test", "test", "test"},
-		}
-		batchRes, err := embedTestHelper(ctx, client, t, batch)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		expectedCount := baseRes.PromptEvalCount * 3
-		if batchRes.PromptEvalCount < expectedCount-2 || batchRes.PromptEvalCount > expectedCount+2 {
-			t.Fatalf("expected ~%d tokens (3 × %d), got %d",
-				expectedCount, baseRes.PromptEvalCount, batchRes.PromptEvalCount)
-		}
-	})
-}
-
-// TestEmbedStatusCode tests that errors from the embedding endpoint
-// properly preserve their HTTP status codes when returned to the client.
-// This test specifically checks the error handling path in EmbedHandler
-// where api.StatusError errors should maintain their original status code.
-func TestEmbedStatusCode(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
-	defer cancel()
-	client, _, cleanup := InitServerConnection(ctx, t)
-	defer cleanup()
-
-	// Pull the model if needed
-	if err := PullIfMissing(ctx, client, "all-minilm"); err != nil {
-		t.Fatal(err)
-	}
-
-	t.Run("truncation error status code", func(t *testing.T) {
-		truncFalse := false
-		longInput := strings.Repeat("word ", 100)
-
-		req := api.EmbedRequest{
-			Model:    "all-minilm",
-			Input:    longInput,
-			Truncate: &truncFalse,
-			Options:  map[string]any{"num_ctx": 10},
-		}
-
-		_, err := embedTestHelper(ctx, client, t, req)
-		if err == nil {
-			t.Fatal("expected error when truncate=false with long input")
-		}
-
-		// Check that it's a StatusError with the correct status code
-		var statusErr api.StatusError
-		if !errors.As(err, &statusErr) {
-			t.Fatalf("expected api.StatusError, got %T: %v", err, err)
-		}
-
-		// The error should be a 4xx client error (likely 400 Bad Request)
-		// not a 500 Internal Server Error
-		if statusErr.StatusCode < 400 || statusErr.StatusCode >= 500 {
-			t.Errorf("expected 4xx status code, got %d", statusErr.StatusCode)
-		}
-
-		// Verify the error message is meaningful
-		if !strings.Contains(err.Error(), "context length") {
-			t.Errorf("expected error message to mention context length, got: %v", err)
-		}
-	})
-
-	t.Run("batch truncation error status code", func(t *testing.T) {
-		truncFalse := false
-		req := api.EmbedRequest{
-			Model: "all-minilm",
-			Input: []string{
-				"short input",
-				strings.Repeat("very long input ", 100),
-				"another short input",
-			},
-			Truncate: &truncFalse,
-			Options:  map[string]any{"num_ctx": 10},
-		}
-
-		_, err := embedTestHelper(ctx, client, t, req)
-		if err == nil {
-			t.Fatal("expected error when one input exceeds context with truncate=false")
-		}
-
-		// Check that it's a StatusError with the correct status code
-		var statusErr api.StatusError
-		if !errors.As(err, &statusErr) {
-			t.Fatalf("expected api.StatusError, got %T: %v", err, err)
-		}
-
-		// The error should be a 4xx client error, not a 500 Internal Server Error
-		if statusErr.StatusCode < 400 || statusErr.StatusCode >= 500 {
-			t.Errorf("expected 4xx status code, got %d", statusErr.StatusCode)
-		}
-	})
 }

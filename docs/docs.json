@@ -59,6 +59,10 @@
     {
       "source": "/openai",
       "destination": "/api/openai"
+    },
+    {
+      "source": "/api/openai",
+      "destination": "/api/openai-compatibility"
     }
   ],
   "navigation": {
@@ -126,7 +130,7 @@
           {
             "group": "API Reference",
             "pages": [
-              "/api/index",
+              "/api",
               "/api/authentication",
               "/api/streaming",
               "/api/usage",

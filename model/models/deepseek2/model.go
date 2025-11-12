@@ -62,8 +62,8 @@ type Attention struct {
 	KVANorm *nn.RMSNorm `gguf:"attn_kv_a_norm"`
 	KVB     *nn.Linear  `gguf:"attn_kv_b"`
 
-	KB *nn.Linear `gguf:"attn_k_b"` 
-	VB *nn.Linear `gguf:"attn_v_b"` 
+	KB *nn.Linear `gguf:"attn_k_b"`
+	VB *nn.Linear `gguf:"attn_v_b"`
 
 	Output *nn.Linear `gguf:"attn_out,alt:attn_output"`
 }
@@ -123,15 +123,15 @@ func (attn *Attention) Forward(ctx ml.Context, hiddenStates, positions ml.Tensor
 		qPass = qPass.Permute(ctx, 0, 2, 1, 3)
 		qPassAbsorb := attn.KB.Forward(ctx, qPass)
 		qPassAbsorb = qPassAbsorb.Permute(ctx, 0, 2, 1, 3)
-	
+
 		query = qRot.Concat(ctx, qPassAbsorb, 0)
 		kPass = kPass.Reshape(ctx, opts.kvLoraRank, 1, seqLength)
 		key := kRot.Concat(ctx, kPass, 0)
 		value := kPass
-	
+
 		attention = nn.AttentionWithVMLA(ctx, query, key, value, nil, attn.VB.Weight, opts.kqScale, cache) // is there a better way to write this?
 	}
-	
+
 	attention = attention.Reshape(ctx, attention.Dim(0)*attention.Dim(1), seqLength)
 	return attn.Output.Forward(ctx, attention)
 }
@@ -287,10 +287,10 @@ func New(c fs.Config) (model.Model, error) {
 		),
 		Layers: layers,
 		Options: &Options{
-			isMLA: isMLA,
-			hiddenSize: int(c.Uint("embedding_length")),
-			numHeads:   int(c.Uint("attention.head_count")),
-			numKVHeads: int(c.Uint("attention.head_count_kv")),
+			isMLA:          isMLA,
+			hiddenSize:     int(c.Uint("embedding_length")),
+			numHeads:       int(c.Uint("attention.head_count")),
+			numKVHeads:     int(c.Uint("attention.head_count_kv")),
 			eps:            c.Float("attention.layer_norm_rms_epsilon"),
 			ropeBase:       c.Float("rope.freq_base"),
 			ropeScale:      c.Float("rope.scaling.factor", 1),

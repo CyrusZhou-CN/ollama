@@ -18,6 +18,7 @@ import (
 )
 
 type Options struct {
+	isMLA               bool
 	numExpertsUsed      int
 	numExperts          int
 	normTopKProb        bool
@@ -71,63 +72,16 @@ type Attention struct {
 }
 
 func (attn *Attention) Forward(ctx ml.Context, hiddenStates, positions ml.Tensor, cache kvcache.Cache, opts *Options) ml.Tensor {
-	fmt.Printf("HELLO!\n")
-
-	fmt.Printf("KVB layer: %v\n", attn.KVB)
-
-	if attn.KVB != nil { // then we need to split it
-		attn.KB = &nn.Linear{}
-		attn.VB = &nn.Linear{}
-
-		fmt.Printf("SPLITTING!\n")
-		fmt.Printf("KVB shape: %v\n", attn.KVB.Weight.Shape())
-		fmt.Printf("KVB stride 0: %v\n", attn.KVB.Weight.Stride(0))
-		fmt.Printf("KVB stride 1: %v\n", attn.KVB.Weight.Stride(1))
-		fmt.Printf("KVB stride 2: %v\n", attn.KVB.Weight.Stride(2))
-
-		kvb := attn.KVB.Weight
-
-		kvb = kvb.Reshape(ctx, 512, 256, 128)
-		fmt.Printf("KVB shape: %v\n", kvb.Shape()) // [512, 256, 128]
-		kvb = kvb.Permute(ctx, 1, 0, 2, 3)         //.Contiguous(ctx)
-		fmt.Printf("KVB shape: %v\n", kvb.Shape()) // [256, 512, 128]
-
-		kb := kvb.View(ctx,
-			0, 128,
-			kvb.Stride(1), kvb.Dim(1),
-			kvb.Stride(2), kvb.Dim(2),
-		)
-		fmt.Printf("KB shape: %v\n", kb.Shape()) // [128, 512, 128]
-
-		vb := kvb.View(ctx,
-			128*kvb.Stride(0), 128,
-			kvb.Stride(1), kvb.Dim(1),
-			kvb.Stride(2), kvb.Dim(2),
-		) // [128, 512, 128]
-
-		vb = vb.Permute(ctx, 1, 0, 2, 3)         //.Contiguous(ctx)
-		fmt.Printf("VB shape: %v\n", vb.Shape()) // [512, 128, 128]
-
-		attn.KB.Weight = kb
-		fmt.Printf("saved 1\n")
-		attn.VB.Weight = vb
-		fmt.Printf("saved 2\n")
-	}
-
-	fmt.Printf("Either completed or skipped splitting\n")
-
 	seqLength := hiddenStates.Dim(1)
 
 	var query ml.Tensor
-	if opts.qLoraRank == 0 { // nil {
+	if opts.qLoraRank == 0 {
 		query = attn.Q.Forward(ctx, hiddenStates)
 	} else {
 		query = attn.QA.Forward(ctx, hiddenStates)
 		query = attn.QANorm.Forward(ctx, query, opts.eps)
 		query = attn.QB.Forward(ctx, query)
 	}
-
-	fmt.Printf("query: %v\n", query.Shape())
 
 	query = query.Reshape(ctx, query.Dim(0)/opts.numHeads, opts.numHeads, seqLength)
 
@@ -140,8 +94,6 @@ func (attn *Attention) Forward(ctx ml.Context, hiddenStates, positions ml.Tensor
 		query.Dim(1), query.Stride(2),
 		query.Dim(2))
 
-	// fmt.Printf("QROT: %v\n", qRot.Shape())
-
 	compressedKV := attn.KVA.Forward(ctx, hiddenStates)
 
 	kPass := compressedKV.View(ctx, 0, opts.kvLoraRank, compressedKV.Stride(1), compressedKV.Dim(1))
@@ -152,48 +104,50 @@ func (attn *Attention) Forward(ctx ml.Context, hiddenStates, positions ml.Tensor
 
 	qRot = fast.RoPE(ctx, qRot, positions, opts.qkRopeHeadDim, opts.ropeBase, 1./opts.ropeScale, opts.RoPEOptions()...)
 	kRot = fast.RoPE(ctx, kRot, positions, opts.qkRopeHeadDim, opts.ropeBase, 1./opts.ropeScale, opts.RoPEOptions()...)
-
 	kPass = attn.KVANorm.Forward(ctx, kPass, opts.eps)
 
-	fmt.Printf("Finished all KVA operations\n")
-	{
-		// kPass = attn.KVB.Forward(ctx, kPass)
+	var attention ml.Tensor
 
-		// kv := kPass.Reshape(ctx, kPass.Dim(0)/opts.numKVHeads, opts.numKVHeads, seqLength)
-		// kPass = kv.View(ctx, 0, opts.kqNopeHeadDim, kv.Stride(1), kv.Dim(1), kv.Stride(2), kv.Dim(2))
-		// value := kv.View(ctx, opts.kqNopeHeadDim*kv.Stride(0),
-		// 	opts.vHeadDim, kv.Stride(1),
-		// 	kv.Dim(1), kv.Stride(2),
-		// 	kv.Dim(2)).Contiguous(ctx)
+	if !opts.isMLA { // v3
+		fmt.Printf("Running v3\n")
+		kPass = attn.KVB.Forward(ctx, kPass)
 
-		// // qRot = fast.RoPE(ctx, qRot, positions, opts.qkRopeHeadDim, opts.ropeBase, 1./opts.ropeScale, opts.RoPEOptions()...)
-		// // kRot = fast.RoPE(ctx, kRot, positions, opts.qkRopeHeadDim, opts.ropeBase, 1./opts.ropeScale, opts.RoPEOptions()...)
+		kv := kPass.Reshape(ctx, kPass.Dim(0)/opts.numKVHeads, opts.numKVHeads, seqLength)
+		kPass = kv.View(ctx, 0, opts.kqNopeHeadDim, kv.Stride(1), kv.Dim(1), kv.Stride(2), kv.Dim(2))
+		value := kv.View(ctx, opts.kqNopeHeadDim*kv.Stride(0),
+			opts.vHeadDim, kv.Stride(1),
+			kv.Dim(1), kv.Stride(2),
+			kv.Dim(2)).Contiguous(ctx)
 
-		// kRot = kRot.Repeat(ctx, 1, qPass.Dim(1))
+		// qRot = fast.RoPE(ctx, qRot, positions, opts.qkRopeHeadDim, opts.ropeBase, 1./opts.ropeScale, opts.RoPEOptions()...)
+		// kRot = fast.RoPE(ctx, kRot, positions, opts.qkRopeHeadDim, opts.ropeBase, 1./opts.ropeScale, opts.RoPEOptions()...)
 
-		// query = qRot.Concat(ctx, qPass, 0)
-		// key := kRot.Concat(ctx, kPass, 0)
+		kRot = kRot.Repeat(ctx, 1, qPass.Dim(1))
 
+		query = qRot.Concat(ctx, qPass, 0)
+		key := kRot.Concat(ctx, kPass, 0)
+
+		attention = nn.Attention(ctx, query, key, value, opts.kqScale, cache)
+	} else { // v3.1
+		fmt.Printf("Running v3.1\n")
+		qPass = qPass.Permute(ctx, 0, 2, 1, 3)
+		qPassAbsorb := attn.KB.Forward(ctx, qPass)
+		qPassAbsorb = qPassAbsorb.Permute(ctx, 0, 2, 1, 3)
+	
+		query = qRot.Concat(ctx, qPassAbsorb, 0)
+		fmt.Printf("query shape: %v\n", query.Shape())
+	
+		kPass = kPass.Reshape(ctx, opts.kvLoraRank, 1, seqLength)
+	
+		key := kRot.Concat(ctx, kPass, 0)
+		fmt.Printf("key shape: %v\n", key.Shape())
+		value := kPass
+		fmt.Printf("value shape: %v\n", value.Shape())
+	
 		// attention := nn.Attention(ctx, query, key, value, opts.kqScale, cache)
+		attention = nn.AttentionWithVMLA(ctx, query, key, value, nil, attn.VB.Weight, opts.kqScale, cache) // is there a better way to write this?
+		fmt.Printf("attention shape: %v\n", attention.Shape())
 	}
-
-	qPass = qPass.Permute(ctx, 0, 2, 1, 3)
-	qPassAbsorb := attn.KB.Forward(ctx, qPass)
-	qPassAbsorb = qPassAbsorb.Permute(ctx, 0, 2, 1, 3)
-
-	query = qRot.Concat(ctx, qPassAbsorb, 0)
-	fmt.Printf("query shape: %v\n", query.Shape())
-
-	kPass = kPass.Reshape(ctx, opts.kvLoraRank, 1, seqLength)
-
-	key := kRot.Concat(ctx, kPass, 0)
-	fmt.Printf("key shape: %v\n", key.Shape())
-	value := kPass
-	fmt.Printf("value shape: %v\n", value.Shape())
-
-	// attention := nn.Attention(ctx, query, key, value, opts.kqScale, cache)
-	attention := nn.AttentionWithVMLA(ctx, query, key, value, nil, attn.VB.Weight, opts.kqScale, cache) // is there a better way to write this?
-	fmt.Printf("attention shape: %v\n", attention.Shape())
 	
 	attention = attention.Reshape(ctx, attention.Dim(0)*attention.Dim(1), seqLength)
 	fmt.Printf("attention shape: %v\n", attention.Shape())
@@ -312,7 +266,7 @@ type Model struct {
 
 func New(c fs.Config) (model.Model, error) {
 	layers := make([]Layer, c.Uint("block_count"))
-	// layers := make([]Layer, 1)
+	// layers := make([]Layer, 4)
 
 	firstDenseLayerIndex := int(c.Uint("leading_dense_block_count"))
 	for i := range layers {
@@ -326,6 +280,7 @@ func New(c fs.Config) (model.Model, error) {
 	mScale := float32(1.0 + float64(c.Float("rope.scaling.yarn_log_multiplier"))*math.Log(float64(c.Float("rope.scaling.factor"))))
 	kqScale := float64(mScale) * float64(mScale) / math.Sqrt(float64(c.Uint("attention.key_length")))
 
+	isMLA := c.Uint("attention.key_length_mla") != 0 && c.Uint("attention.value_length_mla") != 0
 	keyLength := cmp.Or(int(c.Uint("attention.key_length_mla")), int(c.Uint("attention.key_length")))
 	valueLength := cmp.Or(int(c.Uint("attention.value_length_mla")), int(c.Uint("attention.value_length")))
 
@@ -350,6 +305,7 @@ func New(c fs.Config) (model.Model, error) {
 		),
 		Layers: layers,
 		Options: &Options{
+			isMLA: isMLA,
 			hiddenSize: int(c.Uint("embedding_length")),
 			numHeads:   int(c.Uint("attention.head_count")),
 			numKVHeads: int(c.Uint("attention.head_count_kv")),
@@ -376,6 +332,36 @@ func New(c fs.Config) (model.Model, error) {
 			kqScale: kqScale,
 		},
 	}
+
+	fmt.Printf("************************************************\n")	
+	fmt.Printf("Model Options:\n")
+	fmt.Printf("  isMLA: %v\n", m.Options.isMLA)
+	fmt.Printf("  hiddenSize: %d\n", m.Options.hiddenSize)
+	fmt.Printf("  numHeads: %d\n", m.Options.numHeads)
+	fmt.Printf("  numKVHeads: %d\n", m.Options.numKVHeads)
+	fmt.Printf("  eps: %f\n", m.Options.eps)
+	fmt.Printf("  ropeBase: %f\n", m.Options.ropeBase)
+	fmt.Printf("  ropeScale: %f\n", m.Options.ropeScale)
+	fmt.Printf("  numExperts: %d\n", m.Options.numExperts)
+	fmt.Printf("  numExpertsUsed: %d\n", m.Options.numExpertsUsed)
+	fmt.Printf("  normTopKProb: %v\n", m.Options.normTopKProb)
+	fmt.Printf("  qLoraRank: %d\n", m.Options.qLoraRank)
+	fmt.Printf("  kvLoraRank: %d\n", m.Options.kvLoraRank)
+	fmt.Printf("  qkHeadDim: %d\n", m.Options.qkHeadDim)
+	fmt.Printf("  vHeadDim: %d\n", m.Options.vHeadDim)
+	fmt.Printf("  qkRopeHeadDim: %d\n", m.Options.qkRopeHeadDim)
+	fmt.Printf("  qkNopeHeadDim: %d\n", m.Options.qkNopeHeadDim)
+	fmt.Printf("  kqNopeHeadDim: %d\n", m.Options.kqNopeHeadDim)
+	fmt.Printf("  routedScalingFactor: %f\n", m.Options.routedScalingFactor)
+	fmt.Printf("  originalContextLength: %d\n", m.Options.originalContextLength)
+	fmt.Printf("  kqScale: %f\n", m.Options.kqScale)
+	fmt.Printf("************************************************\n")
+
+	fmt.Printf("key_length_mla: %d\n", c.Uint("attention.key_length_mla"))
+	fmt.Printf("key_length: %d\n", c.Uint("attention.key_length"))
+
+	fmt.Printf("value_length_mla: %d\n", c.Uint("attention.value_length_mla"))
+	fmt.Printf("value_length: %d\n", c.Uint("attention.value_length"))
 
 	m.Cache = kvcache.NewCausalCache(m.Shift)
 	return &m, nil

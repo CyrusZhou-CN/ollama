@@ -299,6 +299,7 @@ See the [API documentation](./docs/api.md) for all endpoints.
 - [LibreChat](https://github.com/danny-avila/LibreChat)
 - [Bionic GPT](https://github.com/bionic-gpt/bionic-gpt)
 - [HTML UI](https://github.com/rtcfirefly/ollama-ui)
+- [AI-UI](https://github.com/bajahaw/ai-ui)
 - [Saddle](https://github.com/jikkuatwork/saddle)
 - [TagSpaces](https://www.tagspaces.org) (A platform for file-based apps, [utilizing Ollama](https://docs.tagspaces.org/ai/) for the generation of tags and descriptions)
 - [Chatbot UI](https://github.com/ivanfioravanti/chatbot-ollama)
@@ -640,5 +641,5 @@ See the [API documentation](./docs/api.md) for all endpoints.
 - [Langfuse](https://langfuse.com/docs/integrations/ollama) is an open source LLM observability platform that enables teams to collaboratively monitor, evaluate and debug AI applications.
 - [MLflow Tracing](https://mlflow.org/docs/latest/llms/tracing/index.html#automatic-tracing) is an open source LLM observability tool with a convenient API to log and visualize traces, making it easy to debug and evaluate GenAI applications.
 
-## Security
+### Security
 - [Ollama Fortress](https://github.com/ParisNeo/ollama_proxy_server)

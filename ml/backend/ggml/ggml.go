@@ -305,7 +305,9 @@ func New(modelPath string, params ml.BackendParams) (ml.Backend, error) {
 
 	for _, t := range meta.Tensors().Items() {
 		switch {
-		case contains(t.Name, "position_embd", "token_embd", "token_norm_embd", "token_types"):
+		case contains(t.Name, "position_embd", "token_embd", "token_norm_embd", "token_types") ||
+			// HACK: on non-macOS, keep SAM tensors on the cpu
+			(strings.HasPrefix(t.Name, "s.") && runtime.GOOS != "darwin"):
 			createTensor(tensor{source: t}, input.bts, -1)
 			if _, ok := meta.Tensors().GroupLayers()["output"]; !ok && t.Name == "token_embd.weight" {
 				createTensor(tensor{source: t, target: "output.weight"}, output.bts, blocks)
@@ -314,7 +316,9 @@ func New(modelPath string, params ml.BackendParams) (ml.Backend, error) {
 			"altup_proj", "altup_unembd_proj",
 			"per_layer_token_embd", "per_layer_model_proj", "per_layer_proj_norm"):
 			createTensor(tensor{source: t}, output.bts, blocks)
-		case strings.HasPrefix(t.Name, "v.") || strings.HasPrefix(t.Name, "mm.") || strings.HasPrefix(t.Name, "s."):
+		case strings.HasPrefix(t.Name, "v.") || strings.HasPrefix(t.Name, "mm.") ||
+			// HACK: on macOS, put SAM tensors on the GPU if possible
+			(strings.HasPrefix(t.Name, "s.") && runtime.GOOS == "darwin"):
 			// TODO: assign vision tensors to the gpu if possible
 			createTensor(tensor{source: t}, output.bts, blocks)
 		case contains(t.Name, "rope_freqs", "rope_factors_long", "rope_factors_short"):
@@ -386,7 +390,8 @@ func New(modelPath string, params ml.BackendParams) (ml.Backend, error) {
 		C.int(len(schedBackends)),
 		C.size_t(maxGraphNodes),
 		C._Bool(false),
-		C._Bool(true),
+		// HACK: SAM currently panics on CUDA so keep it on the cpu
+		C._Bool(runtime.GOOS == "darwin" || meta.KV().Uint("sam.block_count") == 0),
 		C._Bool(params.AllocMemory),
 	)
 

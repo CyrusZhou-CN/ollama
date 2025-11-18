@@ -1,5 +1,4 @@
-// fast provides implementations of fast (fused) operations for increased performance.
-package fast
+package nn
 
 import (
 	"github.com/ollama/ollama/ml"

@@ -485,16 +485,13 @@ func (c *Causal) Put(ctx ml.Context, key, value ml.Tensor) {
 		}
 	}
 
-	rowSize := key.Stride(2)
-	key = key.View(ctx, 0, kHeadDim*numKVHeads, rowSize, batchSize)
+	key = key.Reshape(ctx, kHeadDim*numKVHeads, batchSize)
 	keyCache := c.keys[c.curLayer]
 	keyCache = keyCache.Reshape(ctx, kHeadDim*numKVHeads, len(c.cells))
 	ctx.Forward(keyCache.SetRows(ctx, key, c.curLoc))
 
 	if c.config.PermutedV {
-		rowSize := value.Stride(2)
-
-		value = value.View(ctx, 0, vHeadDim*numKVHeads, rowSize, 1, rowSize, batchSize)
+		value = value.Reshape(ctx, vHeadDim*numKVHeads, 1, batchSize)
 		value = value.Permute(ctx, 2, 0, 1, 3)
 
 		valueCache := c.values[c.curLayer]
@@ -502,9 +499,7 @@ func (c *Causal) Put(ctx ml.Context, key, value ml.Tensor) {
 
 		ctx.Forward(valueCache.SetRows(ctx, value, c.curLoc))
 	} else {
-		rowSize := value.Stride(2)
-
-		value = value.View(ctx, 0, vHeadDim*numKVHeads, rowSize, batchSize)
+		value = value.Reshape(ctx, vHeadDim*numKVHeads, batchSize)
 		valueCache := c.values[c.curLayer]
 		valueCache = valueCache.Reshape(ctx, vHeadDim*numKVHeads, len(c.cells))
 

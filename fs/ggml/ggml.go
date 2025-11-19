@@ -250,6 +250,8 @@ func (kv KV) OllamaEngineRequired() bool {
 		"qwen3", "qwen3moe",
 		"qwen3vl", "qwen3vlmoe",
 		"deepseekocr",
+		"deepseek2",
+		"nomic-bert",
 	}, kv.Architecture())
 }
 

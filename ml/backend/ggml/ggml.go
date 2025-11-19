@@ -1338,6 +1338,13 @@ func (t *Tensor) Rows(ctx ml.Context, t2 ml.Tensor) ml.Tensor {
 	}
 }
 
+func (t *Tensor) SetRows(ctx ml.Context, src ml.Tensor, idxs ml.Tensor) ml.Tensor {
+	return &Tensor{
+		b: t.b,
+		t: C.ggml_set_rows(ctx.(*Context).ctx, t.t, src.(*Tensor).t, idxs.(*Tensor).t),
+	}
+}
+
 func (t *Tensor) Copy(ctx ml.Context, t2 ml.Tensor) ml.Tensor {
 	return &Tensor{
 		b: t.b,
@@ -1378,6 +1385,10 @@ func inferShape(t *Tensor, shape []int) {
 }
 
 func (t *Tensor) Reshape(ctx ml.Context, shape ...int) ml.Tensor {
+	if !C.ggml_is_contiguous(t.t) {
+		return t.Contiguous(ctx, shape...)
+	}
+
 	if slices.Contains(shape, -1) {
 		inferShape(t, shape)
 	}

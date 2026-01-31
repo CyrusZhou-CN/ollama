@@ -14,6 +14,7 @@ extern NSString *SystemWidePath;
 @interface AppDelegate () <NSWindowDelegate, WKNavigationDelegate, WKUIDelegate>
 @property(strong, nonatomic) NSStatusItem *statusItem;
 @property(assign, nonatomic) BOOL updateAvailable;
+@property(assign, nonatomic) BOOL systemShutdownInProgress;
 @end
 
 @implementation AppDelegate
@@ -24,27 +25,14 @@ bool firstTimeRun,startHidden; // Set in run before initialization
     for (NSURL *url in urls) {
         if ([url.scheme isEqualToString:@"ollama"]) {
             NSString *path = url.path;
-            if (!path || [path isEqualToString:@""]) {
-                // For URLs like ollama://settings (without triple slash),
-                // the "settings" part is parsed as the host, not the path.
-                // We need to convert it to a path by prepending "/"
-                if (url.host && ![url.host isEqualToString:@""]) {
-                    path = [@"/" stringByAppendingString:url.host];
-                } else {
-                    path = @"/";
-                }
-            }
-            
-            if ([path isEqualToString:@"/connect"] || [url.host isEqualToString:@"connect"]) {
+
+            if (path && ([path isEqualToString:@"/connect"] || [url.host isEqualToString:@"connect"])) {
                 // Special case: handle connect by opening browser instead of app
                 handleConnectURL();
             } else {
                 // Set app to be active and visible
                 [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
                 [NSApp activateIgnoringOtherApps:YES];
-                
-                // Open the path with the UI
-                [self uiRequest:path];
             }
             
             break;
@@ -53,6 +41,13 @@ bool firstTimeRun,startHidden; // Set in run before initialization
 }
 
 - (void)applicationDidFinishLaunching:(NSNotification *)aNotification {
+    // Register for system shutdown/restart notification so we can allow termination
+    [[[NSWorkspace sharedWorkspace] notificationCenter]
+        addObserver:self
+           selector:@selector(systemWillPowerOff:)
+               name:NSWorkspaceWillPowerOffNotification
+             object:nil];
+
     // if we're in development mode, set the app icon
     NSString *bundlePath = [[NSBundle mainBundle] bundlePath];
     if (![bundlePath hasSuffix:@".app"]) {
@@ -260,7 +255,7 @@ bool firstTimeRun,startHidden; // Set in run before initialization
 }
 
 - (void)openHelp:(id)sender {
-    NSURL *url = [NSURL URLWithString:@"https://github.com/ollama/ollama/tree/main/docs"];
+    NSURL *url = [NSURL URLWithString:@"https://docs.ollama.com/"];
     [[NSWorkspace sharedWorkspace] openURL:url];
 }
 
@@ -291,7 +286,18 @@ bool firstTimeRun,startHidden; // Set in run before initialization
     [NSApp activateIgnoringOtherApps:YES];
 }
 
+- (void)systemWillPowerOff:(NSNotification *)notification {
+    // Set flag so applicationShouldTerminate: knows to allow termination.
+    // The system will call applicationShouldTerminate: after posting this notification.
+    self.systemShutdownInProgress = YES;
+}
+
 - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)sender {
+    // Allow termination if the system is shutting down or restarting
+    if (self.systemShutdownInProgress) {
+        return NSTerminateNow;
+    }
+    // Otherwise just hide the app (for Cmd+Q, close button, etc.)
     [NSApp hide:nil];
     [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
     return NSTerminateCancel;

@@ -2,7 +2,9 @@ package config
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -17,9 +19,7 @@ type Openclaw struct{}
 
 func (c *Openclaw) String() string { return "OpenClaw" }
 
-const ansiGreen = "\033[32m"
-
-func (c *Openclaw) Run(model string) error {
+func (c *Openclaw) Run(model string, args []string) error {
 	bin := "openclaw"
 	if _, err := exec.LookPath(bin); err != nil {
 		bin = "clawdbot"
@@ -34,11 +34,35 @@ func (c *Openclaw) Run(model string) error {
 	} else if config, err := loadIntegration("clawdbot"); err == nil && len(config.Models) > 0 {
 		models = config.Models
 	}
+	var err error
+	models, err = resolveEditorModels("openclaw", models, func() ([]string, error) {
+		return selectModels(context.Background(), "openclaw", "")
+	})
+	if errors.Is(err, errCancelled) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
 	if err := c.Edit(models); err != nil {
 		return fmt.Errorf("setup failed: %w", err)
 	}
 
-	cmd := exec.Command(bin, "gateway")
+	if !c.onboarded() {
+		// Onboarding not completed: run it (model already set via Edit)
+		// Use "ollama" as gateway token for simple local access
+		cmd := exec.Command(bin, "onboard",
+			"--auth-choice", "skip",
+			"--gateway-token", "ollama",
+		)
+		cmd.Stdin = os.Stdin
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		return cmd.Run()
+	}
+
+	// Onboarding completed: run gateway
+	cmd := exec.Command(bin, append([]string{"gateway"}, args...)...)
 	cmd.Stdin = os.Stdin
 
 	// Capture output to detect "already running" message
@@ -46,12 +70,41 @@ func (c *Openclaw) Run(model string) error {
 	cmd.Stdout = io.MultiWriter(os.Stdout, &outputBuf)
 	cmd.Stderr = io.MultiWriter(os.Stderr, &outputBuf)
 
-	err := cmd.Run()
+	err = cmd.Run()
 	if err != nil && strings.Contains(outputBuf.String(), "Gateway already running") {
 		fmt.Fprintf(os.Stderr, "%sOpenClaw has been configured with Ollama. Gateway is already running.%s\n", ansiGreen, ansiReset)
 		return nil
 	}
 	return err
+}
+
+// onboarded checks if OpenClaw onboarding wizard was completed
+// by looking for the wizard.lastRunAt marker in the config
+func (c *Openclaw) onboarded() bool {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return false
+	}
+
+	configPath := filepath.Join(home, ".openclaw", "openclaw.json")
+	legacyPath := filepath.Join(home, ".clawdbot", "clawdbot.json")
+
+	config := make(map[string]any)
+	if data, err := os.ReadFile(configPath); err == nil {
+		_ = json.Unmarshal(data, &config)
+	} else if data, err := os.ReadFile(legacyPath); err == nil {
+		_ = json.Unmarshal(data, &config)
+	} else {
+		return false
+	}
+
+	// Check for wizard.lastRunAt marker (set when onboarding completes)
+	wizard, _ := config["wizard"].(map[string]any)
+	if wizard == nil {
+		return false
+	}
+	lastRunAt, _ := wizard["lastRunAt"].(string)
+	return lastRunAt != ""
 }
 
 func (c *Openclaw) Paths() []string {

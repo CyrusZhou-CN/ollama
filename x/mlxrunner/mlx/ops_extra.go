@@ -17,7 +17,8 @@ func Quantize(w *Array, groupSize, bits int, mode string) (weights, scales, bias
 	optBits := C.mlx_optional_int{value: C.int(bits), has_value: true}
 	res := C.mlx_vector_array_new()
 	defer C.mlx_vector_array_free(res)
-	C.mlx_quantize(&res, w.ctx, optGroupSize, optBits, cMode, DefaultStream().ctx)
+	var globalScale C.mlx_array
+	C.mlx_quantize(&res, w.ctx, optGroupSize, optBits, cMode, globalScale, DefaultStream().ctx)
 
 	vecSize := int(C.mlx_vector_array_size(res))
 	w0 := New("QUANTIZE_W")
@@ -45,7 +46,8 @@ func Dequantize(w, scales, biases *Array, groupSize, bits int, mode string) *Arr
 	}
 
 	out := New("DEQUANTIZE")
-	C.mlx_dequantize(&out.ctx, w.ctx, scales.ctx, b, optGroupSize, optBits, cMode, optDtype, DefaultStream().ctx)
+	var globalScale C.mlx_array
+	C.mlx_dequantize(&out.ctx, w.ctx, scales.ctx, b, optGroupSize, optBits, cMode, globalScale, optDtype, DefaultStream().ctx)
 	return out
 }
 
@@ -310,6 +312,12 @@ func Log(a *Array) *Array {
 	return out
 }
 
+func Logaddexp(a, b *Array) *Array {
+	out := New("LOGADDEXP")
+	C.mlx_logaddexp(&out.ctx, a.ctx, b.ctx, DefaultStream().ctx)
+	return out
+}
+
 func SoftmaxAxis(a *Array, axis int, precise bool) *Array {
 	out := New("SOFTMAX_AXIS")
 	C.mlx_softmax_axis(&out.ctx, a.ctx, C.int(axis), C.bool(precise), DefaultStream().ctx)
@@ -328,6 +336,19 @@ func ScaledDotProductAttentionCausal(q, k, v *Array, scale float32, causalMask b
 
 	out := New("FAST_SDPA")
 	C.mlx_fast_scaled_dot_product_attention(&out.ctx, q.ctx, k.ctx, v.ctx, C.float(scale), cMode, mask.ctx, sinks.ctx, DefaultStream().ctx)
+	return out
+}
+
+func LayerNormFn(x, weight, bias *Array, eps float32) *Array {
+	out := New("FAST_LAYERNORM")
+	var w, b C.mlx_array
+	if weight != nil {
+		w = weight.ctx
+	}
+	if bias != nil {
+		b = bias.ctx
+	}
+	C.mlx_fast_layer_norm(&out.ctx, x.ctx, w, b, C.float(eps), DefaultStream().ctx)
 	return out
 }
 
